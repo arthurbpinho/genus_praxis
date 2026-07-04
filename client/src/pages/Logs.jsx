@@ -1,0 +1,420 @@
+import { useState, useEffect, useMemo } from 'react';
+import { api } from '../api';
+import Typewriter from '../components/Typewriter';
+import ScoreBadge from '../components/ScoreBadge';
+import LogActions from '../components/LogActions';
+import { makeLogItems, downloadText } from '../logFiles';
+
+function formatDate(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (isNaN(d)) return '—';
+  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function sanitizeFilename(name) {
+  return (name || 'log').replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, '_').slice(0, 80);
+}
+const LOG_TTL_DAYS_FALLBACK = 30;
+function logExpiresAt(log) {
+  if (log.expiresAt) return new Date(log.expiresAt);
+  const base = new Date(log.timestamp || 0);
+  if (isNaN(base)) return null;
+  return new Date(base.getTime() + LOG_TTL_DAYS_FALLBACK * 86400000);
+}
+function daysUntilExpiry(log) {
+  const exp = logExpiresAt(log);
+  if (!exp) return null;
+  return Math.ceil((exp.getTime() - Date.now()) / 86400000);
+}
+function ExpiryNote({ log }) {
+  const exp = logExpiresAt(log);
+  if (!exp) return null;
+  const days = daysUntilExpiry(log);
+  const soon = days != null && days <= 7;
+  return (
+    <span className={`expiry-note ${soon ? 'soon' : ''}`} title="Após esta data o log é removido automaticamente">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M12 8v4l3 2" /></svg>
+      expira {exp.toLocaleDateString('pt-BR')}{soon && days >= 0 ? ` · ${days}d` : ''}
+    </span>
+  );
+}
+
+function buildLogStrings(log) {
+  const messages = Array.isArray(log.messages) ? log.messages : [];
+  const header = [
+    `Terapeuta: ${log.userName || '—'}`,
+    `Paciente: ${log.itemTitle || '—'}`,
+    `Sessões: ${log.sessionCount || 1}`,
+    `Data: ${formatDate(log.timestamp)}`,
+  ].join('\n');
+  const transcript = messages.filter((m) => !m.isSystem).map((m) => {
+    const isUser = m.role === 'user';
+    const author = isUser ? (log.userName || 'Terapeuta') : (log.itemTitle || 'Paciente');
+    const star = m.highlighted ? ' ★' : '';
+    const comment = m.highlighted && m.comment ? `\n   {${m.comment}}` : '';
+    return `[${author}${star}]\n${m.content}${comment}`;
+  }).join('\n\n---\n\n');
+  const scoreLine = log.score != null ? `Nota final: ${log.score}\n\n` : '';
+  const evalPart = log.evaluation ? `\n\n===========================\nAVALIAÇÃO\n===========================\n\n${scoreLine}${log.evaluation}` : '';
+  return {
+    logStr: `${header}\n\n---\n\n${transcript}`,
+    evalStr: `${header}${evalPart}`,
+    bothStr: `${header}\n\n---\n\n${transcript}${evalPart}`,
+    hasEval: !!evalPart,
+  };
+}
+function logItemsFor(log) {
+  const base = `${sanitizeFilename(log.userName)}-${sanitizeFilename(log.itemTitle)}`;
+  const hasEval = !!log.evaluation;
+  return makeLogItems({
+    baseName: base,
+    getLog: () => buildLogStrings(log).logStr,
+    getEval: hasEval ? () => buildLogStrings(log).evalStr : null,
+    getBoth: hasEval ? () => buildLogStrings(log).bothStr : null,
+  });
+}
+function downloadLogAsText(log) {
+  const stamp = (log.timestamp || new Date().toISOString()).slice(0, 10);
+  downloadText(`log-${sanitizeFilename(log.userName)}-${sanitizeFilename(log.itemTitle)}-${stamp}.txt`, buildLogStrings(log).bothStr);
+}
+
+// --- Detalhe de um log (transcrição + avaliação) ---
+function LogMessages({ log }) {
+  const messages = Array.isArray(log.messages) ? log.messages.filter((m) => !m.isSystem) : [];
+  if (messages.length === 0) return <p className="muted-italic">Nenhuma mensagem registrada nesta sessão.</p>;
+  return (
+    <>
+      {messages.map((msg, i) => {
+        const isUser = msg.role === 'user';
+        return (
+          <div key={i} className={`msg ${isUser ? 'user' : 'assistant'}`}>
+            <strong>{isUser ? (log.userName || 'Terapeuta') : (log.itemTitle || 'Paciente')}{msg.highlighted ? ' ★' : ''}</strong>
+            {msg.content}
+            {msg.highlighted && msg.comment && <div className="log-comment">{`{${msg.comment}}`}</div>}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function LogCard({ log, canDelete, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const [tab, setTab] = useState('log');
+  const evaluation = (log.evaluation || '').trim();
+  const messages = Array.isArray(log.messages) ? log.messages : [];
+  return (
+    <div className={`log-card ${expanded ? 'expanded' : ''}`} onClick={() => setExpanded((v) => !v)}>
+      <div className="log-meta">
+        <span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>{formatDate(log.timestamp)}</span>
+        {log.userName && <span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>{log.userName}</span>}
+        <span>{log.sessionCount || 1} {(log.sessionCount || 1) === 1 ? 'sessão' : 'sessões'}</span>
+        <span>{messages.filter((m) => !m.isSystem).length} mensagens</span>
+        <ExpiryNote log={log} />
+      </div>
+      <div className="log-card-head">
+        <h4>{log.itemTitle || 'Sessão sem título'}</h4>
+        <div className="log-card-head-right">
+          <ScoreBadge score={log.score} />
+          <span className="expand-hint">{expanded ? 'ocultar' : 'expandir'}</span>
+        </div>
+      </div>
+      {expanded && (
+        <div className="log-detail" onClick={(e) => e.stopPropagation()}>
+          <div className="log-view-tabs">
+            <span className="log-view-label">Visualizar</span>
+            <button type="button" className={`btn ${tab === 'log' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('log')}>Log da sessão</button>
+            <button type="button" className={`btn ${tab === 'evaluation' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('evaluation')} disabled={!evaluation} title={evaluation ? 'Ver avaliação' : 'Sem avaliação registrada'}>
+              Avaliação {evaluation ? '' : '(sem registro)'}
+            </button>
+          </div>
+          <div style={{ margin: '10px 0 14px' }}>
+            <LogActions items={logItemsFor(log)} inline />
+            {canDelete && (
+              <button type="button" className="btn btn-danger btn-sm" style={{ marginLeft: 8 }} onClick={() => onDelete(log)}>Excluir log</button>
+            )}
+          </div>
+          {tab === 'log' ? <LogMessages log={log} /> : (
+            evaluation ? <div className="evaluation-body">{evaluation}</div> : <p className="muted-italic">Esta sessão não tem avaliação registrada.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// VISÃO DO ALUNO — Pacientes → Datas → Detalhe
+// =====================================================================
+function StudentView({ logs }) {
+  const [selectedKey, setSelectedKey] = useState(null);
+  const [selectedLogId, setSelectedLogId] = useState(null);
+  const [tab, setTab] = useState('log');
+
+  const patients = useMemo(() => {
+    const map = new Map();
+    for (const log of logs) {
+      const key = log.itemId || log.itemTitle || '__sem-paciente';
+      if (!map.has(key)) map.set(key, { key, name: log.itemTitle || 'Sem nome', logs: [] });
+      map.get(key).logs.push(log);
+    }
+    const arr = Array.from(map.values()).map((p) => {
+      const sorted = p.logs.slice().sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+      return { ...p, logs: sorted, lastTs: new Date(sorted[0]?.timestamp || 0).getTime() };
+    });
+    arr.sort((a, b) => b.lastTs - a.lastTs);
+    return arr;
+  }, [logs]);
+
+  const selectedPatient = patients.find((p) => p.key === selectedKey) || null;
+  const selectedLog = selectedPatient?.logs.find((l) => l.id === selectedLogId) || null;
+
+  if (selectedLog) {
+    const evaluation = (selectedLog.evaluation || '').trim();
+    return (
+      <div>
+        <BackButton onClick={() => { setSelectedLogId(null); setTab('log'); }}>Voltar para sessões de {selectedPatient?.name}</BackButton>
+        <div className="detail-head">
+          <div className="detail-eyebrow">{selectedPatient?.name}</div>
+          <h3>Sessão de {formatDate(selectedLog.timestamp)}</h3>
+          <div className="detail-sub">
+            <span>{selectedLog.sessionCount || 1} {(selectedLog.sessionCount || 1) === 1 ? 'sessão' : 'sessões'}</span>
+            <ScoreBadge score={selectedLog.score} />
+            <ExpiryNote log={selectedLog} />
+          </div>
+          <div style={{ marginTop: 12 }}><LogActions items={logItemsFor(selectedLog)} inline /></div>
+        </div>
+        <div className="card tight log-view-tabs-card">
+          <div className="log-view-tabs">
+            <span className="log-view-label">Visualizar</span>
+            <button type="button" className={`btn ${tab === 'log' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('log')}>Log da sessão</button>
+            <button type="button" className={`btn ${tab === 'evaluation' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('evaluation')} disabled={!evaluation}>Avaliação {evaluation ? '' : '(sem registro)'}</button>
+          </div>
+        </div>
+        <div className="card tight">
+          {tab === 'log' ? <LogMessages log={selectedLog} /> : (evaluation ? <div className="evaluation-body">{evaluation}</div> : <p className="muted-italic">Esta sessão não tem avaliação registrada.</p>)}
+        </div>
+      </div>
+    );
+  }
+
+  if (selectedPatient) {
+    return (
+      <div>
+        <BackButton onClick={() => setSelectedKey(null)}>Voltar para pacientes</BackButton>
+        <div className="detail-head">
+          <h3>{selectedPatient.name}</h3>
+          <p className="muted">{selectedPatient.logs.length} {selectedPatient.logs.length === 1 ? 'sessão registrada' : 'sessões registradas'}. Escolha uma data.</p>
+        </div>
+        <div className="session-list">
+          {selectedPatient.logs.map((log) => {
+            const dur = log.durationSeconds || 0;
+            const mm = Math.floor(dur / 60).toString().padStart(2, '0');
+            const ss = (dur % 60).toString().padStart(2, '0');
+            return (
+              <div key={log.id} className="card tight session-list-item" onClick={() => { setSelectedLogId(log.id); setTab('log'); }} role="button" tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { setSelectedLogId(log.id); setTab('log'); } }}>
+                <div>
+                  <div className="session-list-date">{formatDate(log.timestamp)}</div>
+                  <div className="session-list-sub">
+                    <span>{dur > 0 ? `Duração ${mm}:${ss}` : 'sem duração'} · {log.sessionCount || 1} {(log.sessionCount || 1) === 1 ? 'sessão' : 'sessões'}</span>
+                    <ExpiryNote log={log} />
+                  </div>
+                </div>
+                <div className="session-list-right"><ScoreBadge score={log.score} /><span className="expand-hint">abrir →</span></div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  if (patients.length === 0) {
+    return <div className="card empty-state">Você ainda não atendeu nenhum paciente.</div>;
+  }
+  return (
+    <div>
+      <p className="muted list-count">{patients.length} {patients.length === 1 ? 'paciente atendido' : 'pacientes atendidos'}</p>
+      <div className="card-grid">
+        {patients.map((p) => (
+          <div key={p.key} className="character-card" onClick={() => setSelectedKey(p.key)} role="button" tabIndex={0}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedKey(p.key); }}>
+            <div className="character-card-header"><h3>{p.name}</h3></div>
+            <p>{p.logs.length} {p.logs.length === 1 ? 'sessão' : 'sessões'}{p.lastTs ? ` · última em ${formatDate(new Date(p.lastTs).toISOString())}` : ''}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BackButton({ children, onClick }) {
+  return (
+    <button type="button" className="btn btn-ghost btn-sm back-btn" onClick={onClick}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
+      {children}
+    </button>
+  );
+}
+
+// =====================================================================
+// VISÃO PROFESSOR/ADMIN — filtros, ordenação e agrupamento por pessoa
+// =====================================================================
+function TherapistGroup({ name, logs, canDelete, onDelete }) {
+  const [open, setOpen] = useState(true);
+  const lastTs = logs.reduce((acc, l) => { const t = new Date(l.timestamp || 0).getTime(); return Number.isFinite(t) && t > acc ? t : acc; }, 0);
+  return (
+    <div className="therapist-group">
+      <div className="therapist-group-head" onClick={() => setOpen((v) => !v)}>
+        <div className="therapist-group-title">
+          <h3>{name || 'Terapeuta sem nome'}</h3>
+          <span className="muted">{logs.length} {logs.length === 1 ? 'sessão' : 'sessões'}{lastTs ? ` · última ${formatDate(new Date(lastTs).toISOString())}` : ''}</span>
+        </div>
+        <div className="therapist-group-actions">
+          <button type="button" className="btn btn-outline btn-sm" onClick={(e) => { e.stopPropagation(); logs.forEach((l) => downloadLogAsText(l)); }} title="Baixar todos os logs deste terapeuta">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+            Baixar todos
+          </button>
+          <span className="expand-hint">{open ? 'ocultar' : 'expandir'}</span>
+        </div>
+      </div>
+      {open && logs.map((log) => <LogCard key={log.id} log={log} canDelete={canDelete} onDelete={onDelete} />)}
+    </div>
+  );
+}
+
+function AllLogsView({ logs, canDelete, onDelete }) {
+  const [therapistQuery, setTherapistQuery] = useState('');
+  const [patientQuery, setPatientQuery] = useState('');
+  const [sort, setSort] = useState('recent'); // recent | old | therapist | patient
+  const [grouped, setGrouped] = useState(true);
+
+  const filtered = useMemo(() => {
+    const tq = therapistQuery.trim().toLowerCase();
+    const pq = patientQuery.trim().toLowerCase();
+    let arr = logs.filter((l) =>
+      (!tq || (l.userName || '').toLowerCase().includes(tq)) &&
+      (!pq || (l.itemTitle || '').toLowerCase().includes(pq)),
+    );
+    const byDate = (a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
+    if (sort === 'recent') arr = arr.slice().sort(byDate);
+    else if (sort === 'old') arr = arr.slice().sort((a, b) => -byDate(a, b));
+    else if (sort === 'therapist') arr = arr.slice().sort((a, b) => (a.userName || '').localeCompare(b.userName || '', 'pt-BR') || byDate(a, b));
+    else if (sort === 'patient') arr = arr.slice().sort((a, b) => (a.itemTitle || '').localeCompare(b.itemTitle || '', 'pt-BR') || byDate(a, b));
+    return arr;
+  }, [logs, therapistQuery, patientQuery, sort]);
+
+  const groups = useMemo(() => {
+    if (!grouped) return null;
+    const byUser = new Map();
+    for (const log of filtered) {
+      const key = log.userId || log.userName || '__sem-id';
+      if (!byUser.has(key)) byUser.set(key, { name: log.userName || 'Terapeuta sem nome', logs: [] });
+      byUser.get(key).logs.push(log);
+    }
+    const arr = Array.from(byUser.values());
+    if (sort === 'therapist') arr.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
+    else arr.sort((a, b) => {
+      const ta = new Date(a.logs[0]?.timestamp || 0).getTime();
+      const tb = new Date(b.logs[0]?.timestamp || 0).getTime();
+      return sort === 'old' ? ta - tb : tb - ta;
+    });
+    return arr;
+  }, [filtered, grouped, sort]);
+
+  return (
+    <div>
+      <div className="logs-toolbar">
+        <div className="logs-filter">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+          <input type="text" value={therapistQuery} onChange={(e) => setTherapistQuery(e.target.value)} placeholder="Filtrar por terapeuta…" />
+        </div>
+        <div className="logs-filter">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+          <input type="text" value={patientQuery} onChange={(e) => setPatientQuery(e.target.value)} placeholder="Filtrar por paciente…" />
+        </div>
+        <select className="logs-sort" value={sort} onChange={(e) => setSort(e.target.value)}>
+          <option value="recent">Mais recentes</option>
+          <option value="old">Mais antigos</option>
+          <option value="therapist">Terapeuta (A–Z)</option>
+          <option value="patient">Paciente (A–Z)</option>
+        </select>
+        <label className="logs-group-toggle">
+          <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} />
+          Agrupar por pessoa
+        </label>
+      </div>
+
+      <p className="muted list-count">{filtered.length} {filtered.length === 1 ? 'sessão' : 'sessões'}{grouped && groups ? ` · ${groups.length} ${groups.length === 1 ? 'terapeuta' : 'terapeutas'}` : ''}</p>
+
+      {filtered.length === 0 ? (
+        <div className="card empty-state">Nenhuma sessão corresponde aos filtros.</div>
+      ) : grouped ? (
+        groups.map((g, i) => <TherapistGroup key={i} name={g.name} logs={g.logs} canDelete={canDelete} onDelete={onDelete} />)
+      ) : (
+        filtered.map((log) => <LogCard key={log.id} log={log} canDelete={canDelete} onDelete={onDelete} />)
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+export default function Logs({ user }) {
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [ttlDays, setTtlDays] = useState(LOG_TTL_DAYS_FALLBACK);
+  const isStudent = user.role === 'therapist';
+  const isAdmin = user.role === 'admin';
+
+  function reload() {
+    setLoading(true);
+    setError('');
+    api.getLogs(isStudent ? user.id : undefined)
+      .then(setLogs)
+      .catch((err) => setError(err.message || 'Erro ao carregar logs'))
+      .finally(() => setLoading(false));
+  }
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [user.id]);
+  useEffect(() => { api.getLogsPolicy().then((p) => { if (p && p.ttlDays) setTtlDays(p.ttlDays); }).catch(() => {}); }, []);
+
+  async function handleDelete(log) {
+    if (!window.confirm(`Excluir o log de "${log.itemTitle}" (${log.userName})?`)) return;
+    try { await api.deleteLog(log.id); setLogs((prev) => prev.filter((l) => l.id !== log.id)); }
+    catch (err) { setError(err.message || 'Erro ao excluir log'); }
+  }
+
+  const title = isStudent ? 'Meus logs' : 'Todos os logs';
+  const subtitle = isStudent
+    ? 'Pacientes que você atendeu. Clique em um para ver as datas e abrir o log de cada sessão.'
+    : 'Histórico de todas as sessões da plataforma. Filtre, ordene, agrupe por pessoa, visualize e baixe.';
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="eyebrow">Histórico</div>
+        <h2><Typewriter text={title} /></h2>
+        <p>{subtitle}</p>
+        <div className="ornament" />
+      </div>
+
+      {error && <div className="alert error">{error}</div>}
+
+      <div className="log-expiry-banner">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+        <span>Os logs expiram automaticamente após <strong>{ttlDays} dias</strong>. Baixe os que quiser guardar antes disso.</span>
+      </div>
+
+      {loading ? (
+        <div className="card" style={{ textAlign: 'center', padding: 40 }}><span className="spinner" /> <span style={{ marginLeft: 12 }}>Carregando sessões…</span></div>
+      ) : isStudent ? (
+        <StudentView logs={logs} />
+      ) : logs.length === 0 ? (
+        <div className="card empty-state">Nenhuma sessão registrada na plataforma ainda.</div>
+      ) : (
+        <AllLogsView logs={logs} canDelete={isAdmin} onDelete={handleDelete} />
+      )}
+    </div>
+  );
+}

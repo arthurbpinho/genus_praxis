@@ -1,0 +1,27 @@
+# dependências
+node_modules/
+client/node_modules/
+
+# build do front
+client/dist/
+
+# ambiente / segredos (NUNCA versionar)
+.env
+.env.*
+!.env.example
+client/.env
+client/.env.*
+
+# dados em runtime (contêm hashes de senha e dados de usuários)
+server/data/*.json
+server/data/patient-photos/
+server/data/tmp_audio_*
+
+# fontes de origem / brief (não necessários no repo — as cópias usadas ficam em client/public)
+img/
+claude.txt
+
+# diversos
+*.log
+.DS_Store
+Thumbs.db
