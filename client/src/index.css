@@ -300,6 +300,14 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .login-card form { display: flex; flex-direction: column; gap: 15px; text-align: left; }
 .login-card form label { text-align: left; }
 .login-card .btn-primary { margin-top: 6px; }
+.login-demo { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
+.login-demo-tag { display: inline-block; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--orange); background: rgba(255, 98, 0, 0.1); border: 1px solid var(--border-orange); padding: 3px 10px; border-radius: 999px; margin-bottom: 10px; }
+.login-demo p { font-size: 13px; color: var(--text-soft); margin: 0 0 12px; }
+.login-demo-btns { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+
+/* Selo "Demonstração" na barra lateral. */
+.sidebar-demo { display: inline-block; margin-top: 8px; font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--orange); background: rgba(255, 98, 0, 0.1); border: 1px solid var(--border-orange); padding: 2px 8px; border-radius: 999px; }
+.sidebar-collapsed .sidebar-demo { display: none; }
 
 /* =====================================================================
    Home

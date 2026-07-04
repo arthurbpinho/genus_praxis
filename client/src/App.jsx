@@ -8,7 +8,7 @@ import AdminCharacters from './pages/AdminCharacters';
 import AdminUsers from './pages/AdminUsers';
 import Logs from './pages/Logs';
 import Profile from './pages/Profile';
-import { api, getToken, clearAuth, onSessionExpired } from './api';
+import { api, getToken, clearAuth, onSessionExpired, DEMO } from './api';
 import { ICONS } from './icons';
 
 const USER_KEY = 'gp_user';
@@ -78,7 +78,7 @@ export default function App() {
           </svg>
         </button>
         <div className="mobile-topbar-logo">
-          <img src="/logo.png" alt="" className="brand-mark-sm" />
+          <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" className="brand-mark-sm" />
           <span>Genus <span className="accent">Práxis</span></span>
         </div>
         <Link to="/perfil" className="mobile-topbar-avatar" aria-label="Perfil">
@@ -100,9 +100,10 @@ export default function App() {
           </svg>
         </button>
         <div className="sidebar-logo">
-          <img src="/logo.png" alt="Genus Práxis" className="brand-mark" />
+          <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Genus Práxis" className="brand-mark" />
           <h1>Genus <span className="accent">Práxis</span></h1>
           <p>Simulação Clínica</p>
+          {DEMO && <span className="sidebar-demo">Demonstração</span>}
         </div>
 
         <nav className="sidebar-nav">

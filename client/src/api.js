@@ -1,3 +1,5 @@
+import { demoApi } from './demo';
+
 // Origem da API. Vazio (padrão) = mesma origem — funciona no dev (proxy do Vite)
 // e no deploy full-stack (o Express serve o front). Para hospedar o FRONT no
 // GitHub Pages com o BACKEND em outro host, defina VITE_API_BASE no build com a
@@ -6,6 +8,10 @@ const API_ORIGIN = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
 const BASE = `${API_ORIGIN}/api`;
 const TOKEN_KEY = 'gp_token';
 const USER_KEY = 'gp_user';
+
+// Modo demonstração (VITE_DEMO=1): front sem backend, com dados fictícios.
+// Usado no GitHub Pages para mostrar o app sem servidor.
+export const DEMO = import.meta.env.VITE_DEMO === '1';
 
 // Resolve URLs de assets servidos pelo backend (ex.: /patient-photos/...).
 // Data URLs e URLs absolutas passam direto.
@@ -62,7 +68,7 @@ async function request(path, options = {}) {
   return res.json();
 }
 
-export const api = {
+const realApi = {
   // Auth
   login: async (username, password) => {
     const data = await request('/login', { method: 'POST', body: { username, password } });
@@ -129,3 +135,6 @@ export const api = {
     return { blob, filename };
   },
 };
+
+// No modo demonstração usamos a API falsa (sem backend); senão, a real.
+export const api = DEMO ? demoApi : realApi;

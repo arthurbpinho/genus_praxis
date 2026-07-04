@@ -29,7 +29,7 @@ export default function Home({ user }) {
   return (
     <div className="home-page">
       <div className="home-banner">
-        <img src="/banner.jpeg" alt="Cada psicólogo é uma esfera de potencial ilimitado" />
+        <img src={`${import.meta.env.BASE_URL}banner.jpeg`} alt="Cada psicólogo é uma esfera de potencial ilimitado" />
       </div>
 
       <section className="home-hero">

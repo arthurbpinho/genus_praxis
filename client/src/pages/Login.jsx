@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api } from '../api';
+import { api, DEMO } from '../api';
 
 export default function Login({ onLogin }) {
   const [username, setUsername] = useState('');
@@ -21,10 +21,23 @@ export default function Login({ onLogin }) {
     }
   }
 
+  async function quickLogin(role) {
+    setError('');
+    setLoading(true);
+    try {
+      const user = await api.login(role, 'demo');
+      onLogin(user);
+    } catch (err) {
+      setError(err.message || 'Erro');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="login-container">
       <div className="login-card">
-        <img src="/logo.png" alt="Genus Práxis" className="login-mark" />
+        <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Genus Práxis" className="login-mark" />
         <div className="login-eyebrow">Plataforma de Simulação Clínica</div>
         <h1>Genus <span className="accent">Práxis</span></h1>
         <p className="subtitle">todo ser humano é único e possui um potencial ilimitado</p>
@@ -44,6 +57,18 @@ export default function Login({ onLogin }) {
             {loading ? 'Entrando…' : 'Entrar'}
           </button>
         </form>
+
+        {DEMO && (
+          <div className="login-demo">
+            <div className="login-demo-tag">Modo demonstração · sem servidor</div>
+            <p>Entre com qualquer senha, ou acesse direto como:</p>
+            <div className="login-demo-btns">
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => quickLogin('admin')} disabled={loading}>Administrador</button>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => quickLogin('supervisor')} disabled={loading}>Professor</button>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => quickLogin('aluno')} disabled={loading}>Aluno</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

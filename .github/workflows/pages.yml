@@ -37,7 +37,10 @@ jobs:
           # Caminho base do projeto no Pages (https://<user>.github.io/genus_praxis/).
           # Ajuste se renomear o repositório.
           VITE_BASE: /genus_praxis/
-          # URL pública do backend (defina em Actions → Variables).
+          # Modo demonstração ON por padrão (front sem backend, dados fictícios).
+          # Para usar um backend real: crie a variável VITE_DEMO=0 e defina VITE_API_BASE.
+          VITE_DEMO: ${{ vars.VITE_DEMO || '1' }}
+          # URL pública do backend (só usada quando VITE_DEMO=0).
           VITE_API_BASE: ${{ vars.VITE_API_BASE }}
         run: npx vite build
       - name: Fallback de SPA (404.html)

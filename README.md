@@ -70,22 +70,28 @@ npm install && npm run build && npm start
 Defina no host: `JWT_SECRET`, `ADMIN_INITIAL_PASSWORD`, `OPENAI_API_KEY` (opcional)
 e um `DATA_DIR` apontando para um volume persistente.
 
-### Opção B — front no GitHub Pages + backend separado
+### Opção B — GitHub Pages (só front)
 
-O **GitHub Pages hospeda só arquivos estáticos** — ele não roda o servidor. O
-workflow `.github/workflows/pages.yml` builda e publica o front automaticamente a
-cada push na `main`. Para funcionar de verdade:
+O **GitHub Pages hospeda só arquivos estáticos** — não roda o servidor. O workflow
+`.github/workflows/pages.yml` builda e publica o front a cada push na `main`.
 
-1. Hospede o **backend** em algum host Node (Opção A, sem `npm run build`; use
-   `npm run server`).
-2. No GitHub: **Settings → Pages → Source: GitHub Actions**.
+**Por padrão o build do Pages usa o MODO DEMONSTRAÇÃO** (`VITE_DEMO=1`): o front
+roda 100% no navegador, com dados fictícios em memória e sem backend/IA. É ótimo
+para **mostrar o app** — o login aceita qualquer senha (ou os botões
+Administrador / Professor / Aluno) e dá pra clicar em tudo. Nada é salvo de
+verdade. Site: `https://arthurbpinho.github.io/genus_praxis/`.
+
+**Para ligar um backend real no Pages** (em vez da demo):
+
+1. Hospede o **backend** num host Node (Opção A, mas com `npm run server`).
+2. **Settings → Pages → Source: GitHub Actions**.
 3. Em **Settings → Secrets and variables → Actions → Variables**, crie
-   `VITE_API_BASE` com a URL pública do backend (ex.: `https://seu-backend.up.railway.app`).
+   `VITE_DEMO` = `0` e `VITE_API_BASE` = URL pública do backend.
 4. No backend, adicione a URL do Pages ao `CORS_ALLOWLIST`
    (ex.: `https://arthurbpinho.github.io`).
 
-> Sem um backend hospedado + `VITE_API_BASE`, o site do Pages abre mas o login e
-> tudo que usa a API falham. Se quiser simplicidade, prefira a Opção A.
+> Para uso real (dados de verdade, IA), prefira a **Opção A** (full-stack). O
+> Pages serve bem como vitrine/demonstração do front.
 
 ## O que tem
 
