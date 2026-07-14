@@ -8,7 +8,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const { buildExercisePrompt, buildFreeplayPrompt, wrapCustomEvaluatorPrompt } = require('./prompts');
-const { finalScoreFromCriteria, comparativeScores } = require('./scoring');
+const { toScore, finalScoreFromCriteria, comparativeScores } = require('./scoring');
 const mmrEngine = require('./mmr');
 const {
   FEATURES, FEATURE_ROLES, featureRoleOf,
@@ -451,6 +451,13 @@ function readSkills() {
   return Array.isArray(list) ? list : [];
 }
 
+/** O nome já pertence a OUTRA competência? (comparação sem caixa e sem espaços) */
+function skillNameTaken(skills, name, selfId = null) {
+  const alvo = String(name || '').trim().toLowerCase();
+  if (!alvo) return false;
+  return skills.some((s) => s.id !== selfId && String(s.name || '').trim().toLowerCase() === alvo);
+}
+
 /** O texto de critérios de uma competência. Vazio se ela não existe mais (órfão, D4). */
 function skillCriteriaFor(skillId) {
   const s = readSkills().find((x) => String(x.id) === String(skillId));
@@ -568,7 +575,14 @@ function canUsePatient(user, character) {
   if (!character) return false;
   if (isAdmin(user) || (user && user.role === 'supervisor')) return true;
   const key = isVisitor(user) ? 'allowVisitor' : 'allowStudent';
-  return character[key] !== false;
+
+  // ⚠ Não basta `!== false`: um `"false"` (STRING) é truthy, e o paciente ficava LIBERADO
+  // com o admin achando que o tinha bloqueado. Era um bug real — bastava um form
+  // url-encoded, um <select> HTML ou um client que serialize booleanos como texto.
+  // A escrita já coage (ver `coerceBool` no pickFields), e aqui fechamos por dentro.
+  const v = character[key];
+  if (v === false || v === 'false') return false;
+  return true;   // ausente (base antiga) ou qualquer coisa truthy = liberado
 }
 
 function patientBlockedResponse(res) {
@@ -722,11 +736,24 @@ app.put('/api/users/:id', requireAuth, async (req, res) => {
     const allowed = ['name', 'email', 'profilePhoto'];
     const patch = {};
     for (const k of allowed) if (k in req.body) patch[k] = req.body[k];
+
+    // Unicidade do e-mail. Esta rota é a que o próprio usuário chama ao editar o perfil —
+    // e era por aqui que um aluno assumia o e-mail de um visitante, furando a chave que o
+    // `/api/login/visitor` usa para recuperar contas.
+    if (patch.email !== undefined && String(patch.email || '').trim()) {
+      const dono = emailTakenBy(users, patch.email, req.params.id);
+      if (dono) return { status: 409, field: 'email', error: 'Este e-mail já está cadastrado.' };
+    }
+
     users[idx] = { ...users[idx], ...patch };
     writeJSON('users.json', users);
     return { user: publicUser(users[idx]) };
   });
-  if (result.error) return res.status(result.status).json({ error: result.error });
+  if (result.error) {
+    const body = { error: result.error };
+    if (result.field) body.field = result.field;   // o form destaca o campo que colidiu
+    return res.status(result.status).json(body);
+  }
   res.json(result.user);
 });
 
@@ -741,6 +768,23 @@ function nextUserId(users) {
   }, 0);
   return String(max + 1);
 }
+/**
+ * O e-mail já pertence a OUTRO usuário?
+ *
+ * ⚠ O sistema DEPENDE dessa unicidade: `POST /api/login/visitor` recupera a conta de um
+ * lead por `email + phone`, e recusa (409) um e-mail que já exista. Mas até aqui a
+ * checagem só existia lá — o `POST /api/admin/users` e o `PUT /api/users/:id` gravavam
+ * e-mail duplicado sem reclamar. Um aluno editando o próprio perfil podia **assumir o
+ * e-mail de um visitante** (reproduzido), deixando dois usuários com a mesma chave.
+ *
+ * Comparação case-insensitive, igual à do cadastro de visitante (`:636`).
+ */
+function emailTakenBy(users, email, selfId = null) {
+  const alvo = String(email || '').trim().toLowerCase();
+  if (!alvo) return null;   // e-mail vazio é permitido (o campo é opcional)
+  return users.find((u) => u.id !== selfId && u.email && String(u.email).toLowerCase() === alvo) || null;
+}
+
 function validateUserPayload(body, users, { isUpdate = false, currentUser = null } = {}) {
   const errors = [];
   const username = (body.username || '').trim();
@@ -750,6 +794,11 @@ function validateUserPayload(body, users, { isUpdate = false, currentUser = null
     if (!usernameRegex.test(username)) errors.push('Usuário inválido (3-32 caracteres: letras, números, . _ -)');
     const dup = users.find((u) => u.username === username && (!currentUser || u.id !== currentUser.id));
     if (dup) errors.push('Usuário já existe');
+  }
+  if (body.email !== undefined && String(body.email || '').trim()) {
+    if (emailTakenBy(users, body.email, currentUser ? currentUser.id : null)) {
+      errors.push('Este e-mail já está cadastrado');
+    }
   }
   if (!isUpdate && (!body.password || String(body.password).length < 6)) errors.push('Senha deve ter ao menos 6 caracteres');
   if (body.password !== undefined && body.password !== '' && String(body.password).length < 6) errors.push('Senha deve ter ao menos 6 caracteres');
@@ -952,7 +1001,38 @@ const ACHIEVEMENT_DEFS = [
   { id: 'lua_cheia',          icon: '◐', title: 'Amplitude',             description: 'Realizou sessões antes das 7h e depois das 23h em dias diferentes.',            tier: 'gold' },
 ];
 
-function dayKey(timestamp) { return new Date(timestamp).toISOString().slice(0, 10); }
+// ⚠ BUG REAL de fuso horário. `dayKey` usava `toISOString()` (UTC) enquanto as conquistas
+// `early_bird`/`night_owl` usavam `getHours()` (hora LOCAL) — dois fusos no mesmo módulo.
+// No Brasil (UTC−3), uma sessão às 21h30 cai no dia SEGUINTE em UTC: o aluno que estuda
+// toda noite via a streak "pular" um dia, e a missão diária de hoje só era creditada
+// amanhã. Agora todo o cálculo de "que dia é este log" passa por aqui, num fuso único.
+//
+// `APP_TIMEZONE` permite mudar (uma turma em outro país); o padrão é o de casa.
+const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/Sao_Paulo';
+
+/** Partes de data/hora de um timestamp, no fuso da aplicação. */
+function localParts(timestamp) {
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return null;
+  // `en-CA` dá YYYY-MM-DD, que é exatamente o formato de chave que queremos.
+  const [date, time] = new Intl.DateTimeFormat('en-CA', {
+    timeZone: APP_TIMEZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d).split(', ');
+  return { date, hour: Number(time.slice(0, 2)) };
+}
+
+function dayKey(timestamp) {
+  const p = localParts(timestamp);
+  return p ? p.date : new Date(timestamp).toISOString().slice(0, 10);
+}
+
+/** A hora (0–23) do log, no MESMO fuso do `dayKey`. */
+function localHour(timestamp) {
+  const p = localParts(timestamp);
+  return p ? p.hour : new Date(timestamp).getHours();
+}
 
 function computeStreak(userLogs) {
   if (!userLogs.length) {
@@ -1027,13 +1107,19 @@ function computeEarnedAchievements(userLogs, streak, exercises, freeplay) {
   if (userLogs.some((l) => Number.isFinite(l.score) && l.score >= 25)) earned.add('high_score');
   if (userLogs.some((l) => (l.durationSeconds || 9999) < 300 && Number.isFinite(l.score) && l.score > 0)) earned.add('speed_demon');
 
-  let hasEarly = false, hasLate = false;
+  // A descrição de `lua_cheia` promete "em dias DIFERENTES", mas o código só exigia que as
+  // duas sessões existissem — uma vigília única das 23h às 6h da mesma madrugada
+  // desbloqueava uma conquista de OURO. O aluno lia uma regra e o sistema aplicava outra.
+  // Alinhado ao texto, que é o contrato com o usuário.
+  const diasEarly = new Set();
+  const diasLate = new Set();
   for (const l of userLogs) {
-    const h = new Date(l.timestamp).getHours();
-    if (h < 7) { earned.add('early_bird'); hasEarly = true; }
-    if (h >= 23) { earned.add('night_owl'); hasLate = true; }
+    const h = localHour(l.timestamp);   // mesmo fuso do dayKey (ver APP_TIMEZONE)
+    const dia = dayKey(l.timestamp);
+    if (h < 7) { earned.add('early_bird'); diasEarly.add(dia); }
+    if (h >= 23) { earned.add('night_owl'); diasLate.add(dia); }
   }
-  if (hasEarly && hasLate) earned.add('lua_cheia');
+  if ([...diasEarly].some((d) => [...diasLate].some((o) => o !== d))) earned.add('lua_cheia');
 
   if (userLogs.length >= 100) earned.add('centena');
 
@@ -1248,9 +1334,18 @@ function publicCharacter(c) {
 // `allowStudent` / `allowVisitor`: quem pode atender este paciente (demanda #7).
 const FREEPLAY_FIELDS = ['name', 'age', 'description', 'assistantId', 'specificInstruction', 'evaluationCriteria', 'allowStudent', 'allowVisitor'];
 const EXERCISE_FIELDS = ['skillId', 'title', 'description', 'difficulty', 'specificInstruction', 'evaluatorPrompt'];
+// Campos que são booleanos de verdade e precisam ser coeridos na ENTRADA — senão um
+// `"false"` em texto entra cru no JSON e passa a valer `true` em qualquer checagem
+// (foi exatamente o bug do bloqueio de paciente).
+const BOOL_FIELDS = new Set(['allowStudent', 'allowVisitor']);
+const coerceBool = (v) => !(v === false || v === 'false' || v === 0 || v === '0' || v === '' || v == null);
+
 function pickFields(body, fields) {
   const out = {};
-  for (const f of fields) if (body && Object.prototype.hasOwnProperty.call(body, f)) out[f] = body[f];
+  for (const f of fields) {
+    if (!body || !Object.prototype.hasOwnProperty.call(body, f)) continue;
+    out[f] = BOOL_FIELDS.has(f) ? coerceBool(body[f]) : body[f];
+  }
   return out;
 }
 
@@ -1351,11 +1446,16 @@ app.post('/api/admin/skills', requireAuth, requireRole('admin'), async (req, res
       id: nextSkillId(skills, usedIds, skillIdFloor()),
     });
     if (errors.length) return { status: 400, error: errors[0].error, fields: errors };
+    // Duas competências com o mesmo nome são indistinguíveis no SkillMap e nos logs — o
+    // aluno vê dois vértices "Hermenêutica" e não sabe qual é qual.
+    if (skillNameTaken(skills, skill.name)) {
+      return { status: 409, field: 'name', error: 'Já existe uma competência com esse nome.' };
+    }
     skills.push(skill);
     writeJSON('skills.json', skills);
     return { skill };
   });
-  if (result.error) return res.status(result.status).json({ error: result.error, fields: result.fields });
+  if (result.error) return res.status(result.status).json({ error: result.error, field: result.field, fields: result.fields });
   await bumpSkillIdFloor(result.skill.id);
   res.json(result.skill);
 });
@@ -1365,14 +1465,25 @@ app.put('/api/admin/skills/:id', requireAuth, requireRole('admin'), async (req, 
     const skills = readSkills();
     const idx = skills.findIndex((s) => String(s.id) === String(req.params.id));
     if (idx === -1) return { status: 404, error: 'Competência não encontrada.' };
+
+    // ⚠ MERGE, não replace — e isto corrige um BUG REAL de perda silenciosa de dado.
+    // O `sanitizeSkill` trata campo ausente como `''`, então um PUT parcial (só nome e
+    // cor, sem `criteria`) APAGAVA os critérios da competência. Nada falhava: o exercício
+    // continuava rodando, o aluno continuava sendo avaliado — só que com o prompt do
+    // paciente montado SEM os critérios. É o único campo do sistema cuja perda não emite
+    // nenhum sinal.
+    const base = { ...skills[idx], ...req.body };
     // O id é imutável: os exercícios e os logs apontam para ele.
-    const { skill, errors } = sanitizeSkill(req.body, { id: skills[idx].id });
+    const { skill, errors } = sanitizeSkill(base, { id: skills[idx].id });
     if (errors.length) return { status: 400, error: errors[0].error, fields: errors };
+    if (skillNameTaken(skills, skill.name, skill.id)) {
+      return { status: 409, field: 'name', error: 'Já existe uma competência com esse nome.' };
+    }
     skills[idx] = skill;
     writeJSON('skills.json', skills);
     return { skill };
   });
-  if (result.error) return res.status(result.status).json({ error: result.error, fields: result.fields });
+  if (result.error) return res.status(result.status).json({ error: result.error, field: result.field, fields: result.fields });
   res.json(result.skill);
 });
 
@@ -1380,6 +1491,15 @@ app.put('/api/admin/skills/:id', requireAuth, requireRole('admin'), async (req, 
 app.post('/api/admin/skills/reorder', requireAuth, requireRole('admin'), async (req, res) => {
   const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.map(String) : null;
   if (!ids) return res.status(400).json({ error: 'ids deve ser uma lista.' });
+
+  // ⚠ BUG REAL corrigido aqui: sem a checagem de UNICIDADE, um `ids` como
+  // ["1","1","1","1","1"] passava (o comprimento batia, e todos os ids existiam) e o
+  // `writeJSON` gravava a MESMA competência cinco vezes — DESTRUINDO as outras quatro.
+  // Todos os exercícios delas viravam órfãos, sem confirmação e sem aviso. Um bug no
+  // drag-and-drop do client bastaria para disparar isso.
+  if (new Set(ids).size !== ids.length) {
+    return res.status(400).json({ error: 'A lista tem ids repetidos.' });
+  }
 
   const result = await withFileLock('skills.json', () => {
     const skills = readSkills();
@@ -1479,6 +1599,13 @@ function decodeImageDataUrl(s) {
 
 // Foto do paciente. Só freeplay tem foto (exercícios são cenários, não pessoas).
 app.put('/api/freeplay/:id/photo', requireAuth, requireRole('admin'), writeLimiter, async (req, res) => {
+  // ⚠ O `isSafeId` vinha DEPOIS do `findIndex` e do parse da imagem — ou seja, só era
+  // alcançável por um id que já casasse um personagem existente. Como os ids são gerados
+  // pelo servidor, ele era inalcançável na prática, e o teste que "provava" a proteção
+  // passava mesmo com o guard deletado (falsa confiança). Agora é a PRIMEIRA coisa: o id
+  // vira nome de arquivo em `PATIENT_PHOTOS_DIR`, e um `../` ali escreve fora do diretório.
+  if (!isSafeId(req.params.id)) return res.status(400).json({ error: 'ID inválido.' });
+
   const file = 'freeplay-characters.json';
   const result = await withFileLock(file, () => {
     const chars = readJSON(file);
@@ -1497,7 +1624,6 @@ app.put('/api/freeplay/:id/photo', requireAuth, requireRole('admin'), writeLimit
     if (!icon || !full) return { status: 400, error: 'Envie a foto (icon e full) como data URL de imagem.' };
     const MAX = 6 * 1024 * 1024;
     if (icon.length > MAX || full.length > MAX) return { status: 413, error: 'Imagem muito grande.' };
-    if (!isSafeId(req.params.id)) return { status: 400, error: 'ID inválido.' };
     try {
       fs.writeFileSync(path.join(PATIENT_PHOTOS_DIR, `${req.params.id}-icon.jpg`), icon);
       fs.writeFileSync(path.join(PATIENT_PHOTOS_DIR, `${req.params.id}-full.jpg`), full);
@@ -1617,13 +1743,22 @@ app.post('/api/logs', requireAuth, writeLimiter, async (req, res) => {
   const { clean: cleanEvaluation, score: inlineScore } = extractFinalScore(noNotes);
 
   const explicitCriteria = (body.criteriaScores && typeof body.criteriaScores === 'object') ? body.criteriaScores : null;
-  let finalScore = Number.isFinite(body.score) ? Number(body.score) : null;
+
+  // ⚠ O `score` VEM DO CLIENTE e alimenta o MMR, o `bestScore` e as conquistas. Sem
+  // limite, um `{score: 999999}` via DevTools destruía a média do aluno, desbloqueava
+  // `high_score` de graça e entrava no ranking. O `mmr.js` clampa internamente, mas a
+  // gamificação não clampava nada. A faixa do sistema é 0–100 (freeplay); exercício usa
+  // 0–10, que cabe dentro. Um score fora da faixa é o próprio cliente mentindo.
+  const clampScore = (v) => (Number.isFinite(v) ? Math.min(100, Math.max(0, Number(v))) : null);
+  let finalScore = clampScore(body.score);
   // Nota derivada das notas por critério (a IA não faz a conta; ver scoring.js).
   // `criteriaScores` explícito no body tem prioridade sobre o bloco extraído.
   if (finalScore === null) {
-    const computed = finalScoreFromCriteria(explicitCriteria || supervisorCriteria);
+    // Também clampado: um critério com nota absurda (a IA escorregando, ou o parser
+    // pescando um número da prosa) produzia notas como 117/100, que iam para o ranking.
+    const computed = clampScore(finalScoreFromCriteria(explicitCriteria || supervisorCriteria));
     if (computed !== null) finalScore = computed;
-    else if (inlineScore !== null) finalScore = inlineScore;
+    else if (inlineScore !== null) finalScore = clampScore(inlineScore);
   }
 
   // mode só é significativo para freeplay: 'competitive' alimenta o MMR.
@@ -1727,7 +1862,22 @@ function readActiveSessions() { return readJSON('active-sessions.json', {}); }
 
 app.get('/api/active-sessions', requireAuth, (req, res) => {
   const all = readActiveSessions();
-  res.json(Object.values(all).filter((s) => s.userId === req.user.id));
+  const freeplay = readJSON('freeplay-characters.json');
+
+  // Demanda #7: uma sessão em andamento de um paciente que o admin BLOQUEOU não aparece
+  // mais na lista. Sem isto, o aluno via o card "sessão em andamento", clicava, e levava
+  // 403 no primeiro turno (o `/api/chat` barra) — um beco sem saída.
+  //
+  // ⚠ O autosave (PUT) continua permitido de propósito: se o bloqueio acontecer no meio de
+  // uma sessão, o aluno não pode perder o que já escreveu. É a mesma escolha do
+  // `POST /api/logs`, que salva o log mas não pontua.
+  const visivel = (s) => {
+    if (s.type !== 'freeplay') return true;
+    const c = freeplay.find((x) => String(x.id) === String(s.itemId));
+    return canUsePatient(req.user, c);
+  };
+
+  res.json(Object.values(all).filter((s) => s.userId === req.user.id && visivel(s)));
 });
 app.get('/api/active-sessions/:type/:itemId', requireAuth, (req, res) => {
   const { type, itemId } = req.params;
@@ -2117,6 +2267,20 @@ app.post('/api/admin/users/:id/visitor-access', requireAuth, requireRole('admin'
 // =====================================================================
 // Os avaliadores emitem, ao fim do texto, um bloco [notas-supervisor] com as
 // notas por critério. O texto limpo vai ao aluno; as notas ficam server-side.
+/**
+ * É uma chave de critério legítima?
+ *   - `1`..`10`  → avaliador de sessão (10 critérios)
+ *   - `A1`..`A6` / `B1`..`B6` → avaliador comparativo do duelo (6 critérios por lado)
+ *
+ * Sem essa allowlist, qualquer "palavra: número" na prosa do modelo virava critério.
+ */
+function isCriterionKey(k) {
+  const s = String(k).trim().toUpperCase();
+  if (/^([1-9]|10)$/.test(s)) return true;         // 1..10
+  if (/^[AB][1-6]$/.test(s)) return true;          // A1..B6
+  return false;
+}
+
 function parseSupervisorPayload(payload) {
   if (!payload) return null;
   try {
@@ -2124,8 +2288,9 @@ function parseSupervisorPayload(payload) {
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
       const out = {};
       for (const [k, v] of Object.entries(obj)) {
-        const n = Number(String(v).replace(',', '.'));
-        if (Number.isFinite(n)) out[String(k)] = n;
+        if (!isCriterionKey(k)) continue;
+        const n = toScore(v);
+        if (n !== null) out[String(k).toUpperCase()] = n;
       }
       if (Object.keys(out).length) return out;
     }
@@ -2134,15 +2299,51 @@ function parseSupervisorPayload(payload) {
   if (!payload.includes(':') && /^[A-Za-z0-9+/=\s]+$/.test(payload)) {
     try { text = Buffer.from(payload, 'base64').toString('utf-8'); } catch {}
   }
-  // Varre os pares em QUALQUER posição, não só um por linha: o avaliador
-  // comparativo devolve os seis de uma vez ("A1: 4  A2: 4  A3: 4 …"), e às vezes
-  // sobra uma cerca ``` residual. Um regex por linha ancorado em ^...$ perdia
-  // tudo isso e o duelo travava em `pending` para sempre.
-  // Chave alfanumérica: "3:8" (avaliador de sessão) ou "A1:8"/"B2:7" (comparativo).
+
+  // ⚠ DOIS bugs reais moram aqui, e eles se contradizem — daí o cuidado.
+  //
+  // 1. O regex NÃO pode ser ancorado por linha (`^...$`): o avaliador comparativo emite os
+  //    seis pares numa linha só ("A1: 4  A2: 4  A3: 4 …"), e ancorar perdia todos — o
+  //    duelo travava em `pending` para sempre.
+  // 2. Mas varrer o texto INTEIRO fazia o parser pescar números da PROSA que o modelo
+  //    escreve depois das notas: "o aluno interrompeu 3: 20 vezes" virava o critério 3
+  //    com nota 20, estourando a nota para 117/100 — direto no MMR e no ranking.
+  //
+  // A saída: varrer **linha a linha**, mas parar na primeira linha que não seja de notas.
+  // Dentro de uma linha de notas, os pares podem estar em qualquer posição (resolve 1);
+  // a prosa que vem depois nunca é alcançada (resolve 2).
   const out = {};
-  const re = /\b([A-Za-z]?\d+)\s*:\s*([-+]?\d+(?:[.,]\d+)?)/g;
-  let m;
-  while ((m = re.exec(text)) !== null) out[m[1]] = Number(m[2].replace(',', '.'));
+  const pair = /\b([A-Za-z]?\d+)\s*:\s*([-+]?\d+(?:[.,]\d+)?)/g;
+
+  let comecou = false;
+  for (const linha of text.split(/\r?\n/)) {
+    const limpa = linha.trim();
+
+    // Linha em branco: antes das notas, tolera (o modelo às vezes pula uma linha depois do
+    // marcador). DEPOIS que as notas começaram, ela ENCERRA o bloco — é justamente a
+    // linha em branco que separa as notas da prosa, e era por ali que o parser vazava
+    // para dentro do texto corrido.
+    if (!limpa) {
+      if (comecou) break;
+      continue;
+    }
+    if (/^[`\-*_]+$/.test(limpa)) continue;      // cerca ``` ou separador ---: tolera
+
+    pair.lastIndex = 0;
+    const daLinha = {};
+    let m;
+    while ((m = pair.exec(limpa)) !== null) {
+      if (!isCriterionKey(m[1])) continue;
+      const n = toScore(m[2]);
+      if (n !== null) daLinha[m[1].toUpperCase()] = n;
+    }
+
+    // Nenhum par válido nesta linha → o bloco de notas acabou. O que vem depois é prosa.
+    if (!Object.keys(daLinha).length) break;
+    comecou = true;
+    Object.assign(out, daLinha);
+  }
+
   return Object.keys(out).length ? out : null;
 }
 
@@ -2170,9 +2371,17 @@ function extractFinalScore(evaluation) {
   const re = /\[NOTA:\s*([-+]?\d+(?:[.,]\d+)?)\s*\]/i;
   const m = text.match(re);
   if (!m) return { clean: text, score: null };
-  const score = Number(m[1].replace(',', '.'));
-  const clean = text.replace(re, '').replace(/\n{3,}/g, '\n\n').trim();
-  return { clean, score: Number.isFinite(score) ? score : null };
+  const score = toScore(m[1]);
+  // ⚠ `replace` com regex SEM `/g` troca só a primeira ocorrência. Se o modelo emitisse o
+  // marcador duas vezes (acontece em prompts longos), o SEGUNDO ficava no texto que o
+  // aluno lê. A nota continua sendo a primeira; o que muda é que agora nenhum marcador
+  // sobra. O `\s*` em volta evita deixar espaço duplo quando ele está no meio da frase.
+  const clean = text
+    .replace(/[ \t]*\[NOTA:\s*[-+]?\d+(?:[.,]\d+)?\s*\][ \t]*/gi, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return { clean, score };
 }
 
 function transcriptFromMessages(messages, authorName, characterName) {
@@ -2298,6 +2507,24 @@ function applyDuelMmr(duel, comp) {
   // como visitante só duela com visitante (D9), o rating dele nunca contamina o dos
   // alunos — as duas arenas moram no mesmo `mmr.json`, separadas na leitura.
   if (duel.mode !== 'competitive') return { ranked: false, reason: 'training' };
+
+  // ⚠ D9 na FINALIZAÇÃO, não só na entrada. A criação e o aceite barram o cruzamento de
+  // arenas — mas um duelo gravado ANTES da D9 (ou seedado à mão) chegaria aqui com um
+  // aluno de um lado e um visitante do outro, e o `processDuel` acoplaria os dois
+  // rankings pelo pool de PvP: exatamente o que a D9 existe para impedir. A defesa tem
+  // que estar onde o rating é escrito.
+  const arenaA = duel.challenger.isVisitor ? 'visitor' : 'therapist';
+  const arenaB = duel.opponent && duel.opponent.isVisitor ? 'visitor' : 'therapist';
+  if (!duel.opponent || arenaA !== arenaB) return { ranked: false, reason: 'cross_arena' };
+
+  // ⚠ Demanda #7: paciente bloqueado NÃO pontua. O `POST /api/logs` já tinha esse guard,
+  // com o comentário "o que ele não leva é o MMR de um paciente que não deveria estar
+  // atendendo" — mas o DUELO não tinha, e o caminho de escrita ficava totalmente aberto.
+  // Cenário real: o admin bloqueia um paciente (material com problema, caso sensível) e
+  // os duelos em voo naquele paciente continuam movendo o ranking.
+  const character = readJSON('freeplay-characters.json').find((c) => String(c.id) === String(duel.character.id));
+  const arenaUser = { role: arenaA === 'visitor' ? 'visitor' : 'therapist' };
+  if (!canUsePatient(arenaUser, character)) return { ranked: false, reason: 'patient_locked' };
 
   const store = readMmr();
   const pA = store.players[duel.challenger.userId] || mmrEngine.newPlayer();
@@ -2556,6 +2783,16 @@ app.post('/api/duel/:id/submit', requireAuth, aiLimiter, async (req, res) => {
     const side = duelSideFor(duel, req.user);
     if (!side) return { status: 403, error: 'Você não participa deste duelo.' };
     if (duel.status === 'completed') return { status: 400, error: 'Duelo já finalizado.' };
+    // ⚠ BUG REAL: sem este guard, um re-submit enquanto a avaliação está EM CURSO
+    // (`status: 'evaluating'`, que dura o tempo da chamada de IA) recalculava
+    // `bothSubmitted = true` e disparava `finalizeDuel` UMA SEGUNDA VEZ — a mesma partida
+    // era avaliada duas vezes e o MMR aplicado duas vezes. O guard de `completed` não
+    // pegava isso: existe uma janela real entre o 2º submit e o fim do `finalizeDuel`.
+    if (duel.status === 'evaluating') return { status: 409, error: 'Este duelo já está sendo avaliado.' };
+    // Re-submeter o próprio lado depois de já ter submetido não reabre nada.
+    if (duel[side] && duel[side].state === 'submitted') {
+      return { status: 409, error: 'Você já enviou este duelo.' };
+    }
 
     duel[side].messages = messages;
     duel[side].durationSeconds = durationSeconds;
@@ -2665,6 +2902,17 @@ app.get('/api/progression/available-patients', requireAuth, requireFeature('prog
 });
 
 app.post('/api/progression/evaluate', requireAuth, requireFeature('progressao'), aiLimiter, async (req, res) => {
+  // ⚠ CUSTO DE IA. A feature `avaliacao` existe para conter gasto — ela nasce DESLIGADA
+  // para o visitante justamente porque "cada sessão avaliada é uma chamada paga" e um lead
+  // pode entrar aos montes. Mas a progressão gastava IA sem consultá-la: bastava o admin
+  // ligar `progressao` para o visitante e o gate de custo virava letra morta.
+  //
+  // Responde `{disabled:true}` com 200 (não 403) pelo mesmo motivo do `/api/evaluate`: o
+  // cliente conta com isso para encerrar o fluxo com uma mensagem, em vez de um erro.
+  if (!canUseFeature(readFeatureAccess(), req.user, 'avaliacao')) {
+    return res.json({ role: 'assistant', content: '', disabled: true });
+  }
+
   const { characterId, messages } = req.body || {};
   if (!characterId || typeof characterId !== 'string') return res.status(400).json({ error: 'characterId é obrigatório.' });
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages deve ser uma lista.' });

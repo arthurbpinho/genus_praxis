@@ -24,6 +24,27 @@ function sectionRegex(numeral) {
   return new RegExp(`##\\s*\\[\\s*${numeral}${SECTION_BOUNDARY}`, 'i');
 }
 
+/**
+ * Índice da ÚLTIMA ocorrência de uma seção.
+ *
+ * ⚠ BUG REAL. O admin pode pedir um segundo caso na MESMA conversa. Como o
+ * `extractBloco2` cortava na PRIMEIRA seção `[I.` e ia até o fim do texto, os dois
+ * personagens eram FUNDIDOS num só: a persona da primeira paciente carregava o prompt da
+ * segunda junto, mais a fala do admin que veio no meio — e o `meta.name` dizia o nome da
+ * primeira, contradizendo o conteúdo. (Quando o modelo emitia a frase de despedida entre
+ * as duas gerações, funcionava por acidente — mas as END_PATTERNS são heurística, não
+ * garantia.)
+ *
+ * A geração que interessa é sempre a ÚLTIMA: é a que o admin acabou de pedir.
+ */
+function lastSectionIndex(text, numeral) {
+  const re = new RegExp(`##\\s*\\[\\s*${numeral}${SECTION_BOUNDARY}`, 'gi');
+  let idx = -1;
+  let m;
+  while ((m = re.exec(text)) !== null) idx = m.index;
+  return idx;
+}
+
 // Frases com que o entrevistador costuma encerrar depois de cuspir o prompt.
 // Cortamos aí para o Bloco 2 não carregar a conversa de despedida.
 const END_PATTERNS = [
@@ -40,10 +61,11 @@ const END_PATTERNS = [
 function extractBloco2(text) {
   if (!text || typeof text !== 'string') return null;
 
-  // Formato atual: começa em "## [I. CONTENÇÃO]".
-  const startMatch = text.match(sectionRegex('I'));
-  if (startMatch) {
-    let body = text.slice(startMatch.index);
+  // Formato atual: começa em "## [I. CONTENÇÃO]" — a ÚLTIMA, se houve mais de uma geração
+  // na mesma conversa (ver `lastSectionIndex`).
+  const startIdx = lastSectionIndex(text, 'I');
+  if (startIdx !== -1) {
+    let body = text.slice(startIdx);
     for (const re of END_PATTERNS) {
       const m = body.match(re);
       if (m) { body = body.slice(0, m.index); break; }

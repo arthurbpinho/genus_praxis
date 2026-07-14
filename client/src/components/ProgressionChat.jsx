@@ -109,7 +109,15 @@ export default function ProgressionChat({ patient, user, onEvaluationComplete, o
         messages: apiMessages,
       });
 
-      setEvaluationText(result.evaluation || '');
+      // A avaliação por IA pode estar desligada para este perfil (matriz de acesso,
+      // demanda #4 — cada avaliação é uma chamada paga). Nesse caso o servidor responde
+      // `{disabled: true}` com 200, e sem esta mensagem a tela de conclusão apareceria
+      // simplesmente EM BRANCO, sem o aluno entender o que houve.
+      setEvaluationText(
+        result.disabled
+          ? 'O atendimento foi registrado. A devolutiva automática não está disponível para o seu perfil.'
+          : (result.evaluation || ''),
+      );
       setCriteria(result.criteria || null);
       setPhase('concluded');
 

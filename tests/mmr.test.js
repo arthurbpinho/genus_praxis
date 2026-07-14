@@ -340,7 +340,7 @@ describe('MMR via API', () => {
     });
   }
 
-  it('partida competitiva atualiza o MMR e devolve o resultado no POST /api/logs', async () => {
+  it('partida competitiva atualiza o MMR — o VALOR gravado, não só o eco', async () => {
     const aluno = await loginAs('aluno');
     const res = await competitiveMatch(aluno, 80);
     expect(res.status).toBe(200);
@@ -348,6 +348,39 @@ describe('MMR via API', () => {
     expect(res.body.mmr).toBeTruthy();
     expect(res.body.mmr.n).toBe(1);
     expect(res.body.mmr.calibrating).toBe(true);
+    // Em calibração o número fica OCULTO (é o contrato do playerView) — mas isso é
+    // exatamente o que fazia o teste antigo não provar nada: ele nunca lia o disco.
+    expect(res.body.mmr.mmr).toBeNull();
+
+    // Cenário determinístico: jogador novo (P=50, n=0) × personagem novo (D=50).
+    //   S_esp = 50 + 0,5·(50−50) = 50 → S_aj = 80 + (50−50) = 80
+    //   K_p(0) = 0,10 + 0,40·e^0 = 0,50
+    //   P = (1−0,5)·50 + 0,5·80 = 65
+    // Trava o número: qualquer mexida no K_p, no S_aj ou na fórmula do passo 5 quebra aqui.
+    const store = readData('mmr.json');
+    expect(store.players['3'].P).toBeCloseTo(65, 6);
+    expect(store.players['3'].n).toBe(1);
+    expect(store.players['3'].W.length).toBe(1);
+    // Durante a calibração a dificuldade do personagem NÃO se move.
+    expect(store.characters['fp-test-1'].D).toBe(50);
+    expect(store.characters['fp-test-1'].n_D).toBe(0);
+  });
+
+  // O cliente manda o `score`, e o `/api/logs` filtra com `Number.isFinite` antes de
+  // chamar o engine. É esse filtro que mantém o NaN fora do mmr.json — o engine agora
+  // também se defende (`safeScore`), mas a rota é a primeira barreira.
+  it('score não-numérico não cria entrada no mmr.json', async () => {
+    const aluno = await loginAs('aluno');
+    for (const lixo of ['abc', null, undefined, {}]) {
+      const res = await request(app).post('/api/logs').set(authHeader(aluno)).send({
+        type: 'freeplay', mode: 'competitive', itemId: 'fp-test-1', itemTitle: 'Sofia',
+        score: lixo, messages: [{ role: 'user', content: 'oi' }],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.mmr == null).toBe(true);   // partida não ranqueada
+    }
+    const store = readData('mmr.json');
+    expect(store.players['3']).toBeUndefined();  // nem um P=NaN, nem um P=0
   });
 
   it('modo treino (sem mode) NÃO mexe no MMR', async () => {

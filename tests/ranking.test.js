@@ -45,6 +45,59 @@ describe('GET /api/ranking — listagem e filtros', () => {
     expect(rank[rank.length - 1].calibrating).toBe(true);
   });
 
+  // ⚠ EMPATE DE MMR — comportamento OBSERVADO, não especificado.
+  //
+  // O comparador devolve 0 quando dois jogadores maduros têm o mesmo MMR. O `.sort()` do
+  // V8 é ESTÁVEL, então a ordem que sobra é a de `users.json` — ou seja, a ordem de
+  // CRIAÇÃO das contas. Na prática: com MMRs empatados, o aluno mais ANTIGO fica sempre
+  // à frente, para sempre, sem nenhuma razão de produto.
+  //
+  // Não é aleatório (o teste abaixo é determinístico), mas também não é um critério: é o
+  // resíduo da ordem de inserção vazando para o pódio. Um tie-break explícito (nº de
+  // partidas? mais recente? nome?) é DECISÃO DE PRODUTO — este teste apenas trava o que
+  // o sistema faz HOJE, para que a decisão, quando vier, quebre o teste em vez de passar
+  // despercebida.
+  it('EMPATE de MMR: a ordem é a de users.json (sem tie-break explícito)', async () => {
+    // Três alunos maduros com EXATAMENTE o mesmo MMR. users.json (fixture): 3, 5, 6.
+    writeData('mmr.json', {
+      players: {
+        6: maturedPlayer(70, 8),
+        3: maturedPlayer(70, 8),
+        5: maturedPlayer(70, 8),
+      },
+      characters: {},
+    });
+    const admin = await loginAs('admin');
+    const rank = (await request(app).get('/api/ranking').set(authHeader(admin))).body;
+
+    expect(rank.map((r) => r.mmr)).toEqual([70, 70, 70]);
+    // A ordem NÃO segue as chaves do mmr.json (6,3,5) nem o MMR — segue users.json.
+    expect(rank.map((r) => r.userId)).toEqual(['3', '5', '6']);
+
+    // E é estável entre chamadas (o sort do V8 é estável; a lista de origem não muda).
+    const denovo = (await request(app).get('/api/ranking').set(authHeader(admin))).body;
+    expect(denovo.map((r) => r.userId)).toEqual(rank.map((r) => r.userId));
+  });
+
+  // Corolário do teste acima, agora com o EFEITO visível: quem chegou depois nunca
+  // alcança quem chegou antes, mesmo com o mesmo rating.
+  it('EMPATE: o desempate é a ANTIGUIDADE da conta (efeito colateral, não regra)', async () => {
+    // Cria um aluno NOVO (vai para o fim de users.json) com o mesmo MMR do aluno '3'.
+    const admin = await loginAs('admin');
+    const novo = await request(app).post('/api/admin/users').set(authHeader(admin)).send({
+      username: 'recem', password: 'senha12345', name: 'Recém Chegado', role: 'therapist',
+    });
+    expect(novo.status).toBe(200);
+    const novoId = novo.body.id;
+
+    writeData('mmr.json', {
+      players: { 3: maturedPlayer(70, 8), [novoId]: maturedPlayer(70, 8) },
+      characters: {},
+    });
+    const rank = (await request(app).get('/api/ranking').set(authHeader(admin))).body;
+    expect(rank.map((r) => r.userId)).toEqual(['3', novoId]);
+  });
+
   // Regressão que a demanda #2 introduziu e a spec não previu: antes, o ranking
   // listava QUALQUER usuário com partidas — inclusive um professor que tivesse
   // jogado. Agora o filtro é por arena, e supervisor/admin não pertencem a nenhuma.

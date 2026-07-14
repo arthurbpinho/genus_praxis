@@ -1,49 +1,15 @@
 // IMPORTANTE: helpers seta as envs antes de importar o app — manter como 1º require.
+//
+// Helpers de duelo (`seedMmr`, `waitCompleted`, `fullDuel`, as mensagens marcadas) moram
+// em tests/helpers.js — estavam duplicados byte-a-byte aqui e em duel-notification.test.js.
 const {
   app, request, resetData, writeData, readData,
-  loginAs, loginVisitor, loginVisitorFull, authHeader, makeLog, DATA_DIR,
+  loginAs, loginVisitor, loginVisitorFull, authHeader,
+  seedMmr, waitCompleted, fullDuel,
+  DUEL_CHAR: CHAR, DUEL_MSGS_A: msgsA, DUEL_MSGS_B: msgsB,
 } = require('./helpers');
 const fs = require('fs');
 const path = require('path');
-
-function seedMmr(players) {
-  fs.writeFileSync(path.join(DATA_DIR, 'mmr.json'), JSON.stringify({ players, characters: {} }, null, 2));
-}
-
-// No modo demonstração (OPENAI_API_KEY=''), runComparativeEvaluation devolve um
-// empate determinístico 50x50, o que torna o duelo testável ponta a ponta.
-// finalizeDuel roda em BACKGROUND após o 2º submit — a resposta ao 2º submit já
-// costuma vir com status 'completed', mas onde há dúvida fazemos polling.
-async function waitCompleted(token, duelId, { tries = 40, delay = 15 } = {}) {
-  for (let i = 0; i < tries; i++) {
-    const r = await request(app).get(`/api/duel/${duelId}`).set(authHeader(token));
-    if (r.body && r.body.status === 'completed') return r;
-    await new Promise((res) => setTimeout(res, delay));
-  }
-  return request(app).get(`/api/duel/${duelId}`).set(authHeader(token));
-}
-
-const CHAR = 'fp-test-1';
-const msgsA = [
-  { role: 'user', content: 'MENSAGEM_SECRETA_DO_A_1234' },
-  { role: 'assistant', content: 'Resposta do paciente para A' },
-];
-const msgsB = [
-  { role: 'user', content: 'MENSAGEM_SECRETA_DO_B_5678' },
-  { role: 'assistant', content: 'Resposta do paciente para B' },
-];
-
-async function fullDuel({ mode } = {}) {
-  const aluno = await loginAs('aluno');
-  const aluno2 = await loginAs('aluno2');
-  const create = await request(app).post('/api/duel').set(authHeader(aluno))
-    .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system', mode });
-  const duelId = create.body.id;
-  await request(app).post(`/api/duel/${duelId}/accept`).set(authHeader(aluno2));
-  await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(aluno)).send({ messages: msgsA, durationSeconds: 120 });
-  const sub2 = await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(aluno2)).send({ messages: msgsB, durationSeconds: 90 });
-  return { aluno, aluno2, duelId, sub2 };
-}
 
 describe('duelos', () => {
   beforeEach(() => resetData());
@@ -68,11 +34,21 @@ describe('duelos', () => {
       expect(readData('duels.json').length).toBe(1);
     });
 
-    it('modo competitive é preservado', async () => {
+    it('modo competitive é PERSISTIDO (não só ecoado na resposta)', async () => {
       const aluno = await loginAs('aluno');
       const res = await request(app).post('/api/duel').set(authHeader(aluno))
         .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system', mode: 'competitive' });
       expect(res.body.mode).toBe('competitive');
+      // O eco da resposta não prova nada: um `mode` lido do body e devolvido sem gravar
+      // passaria. É o disco que decide se o duelo vai ranquear no finalizeDuel.
+      expect(readData('duels.json')[0].mode).toBe('competitive');
+    });
+
+    it('modo inválido/ausente cai em training — no disco', async () => {
+      const aluno = await loginAs('aluno');
+      await request(app).post('/api/duel').set(authHeader(aluno))
+        .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system', mode: 'ranqueado_hackeado' });
+      expect(readData('duels.json')[0].mode).toBe('training');
     });
 
     it('duelo aberto (link/whatsapp) não tem oponente e vem taken=false pelo token', async () => {
@@ -161,15 +137,6 @@ describe('duelos', () => {
       expect(accept.body.opponent.accepted).toBe(true);
     });
 
-    it('terceiro não-participante não aceita convite in-app → 403', async () => {
-      const aluno = await loginAs('aluno');
-      const solo = await loginAs('solo');
-      const create = await request(app).post('/api/duel').set(authHeader(aluno))
-        .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system' });
-      const res = await request(app).post(`/api/duel/${create.body.id}/accept`).set(authHeader(solo));
-      expect(res.status).toBe(403);
-    });
-
     it('aceitar duas vezes pelo mesmo oponente é idempotente (ok)', async () => {
       const aluno = await loginAs('aluno');
       const aluno2 = await loginAs('aluno2');
@@ -218,6 +185,59 @@ describe('duelos', () => {
       await request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(aluno2));
       const res = await request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(solo));
       expect(res.status).toBe(409);
+    });
+
+    // 🔒 CONCORRÊNCIA — o `withFileLock` é o diferencial do projeto (o All_OS não tem) e
+    // não havia UM teste que o exercitasse. Cenário real: o desafiante manda o link no
+    // grupo da turma e dois alunos clicam ao mesmo tempo. Sem o mutex, os dois leem o
+    // duelo ainda livre, os dois gravam `opponent`, e o último write vence — o outro
+    // aluno recebe 200 e fica achando que está no duelo, sem estar.
+    it('dois aceites SIMULTÂNEOS pelo mesmo link → exatamente um 200 e um 409', async () => {
+      const aluno = await loginAs('aluno');
+      const create = await request(app).post('/api/duel').set(authHeader(aluno))
+        .send({ characterId: CHAR, inviteMethod: 'whatsapp' });
+      const token = create.body.token;
+
+      const aluno2 = await loginAs('aluno2');
+      const solo = await loginAs('solo');
+
+      // Disparados no MESMO tick: sem serialização, os dois leem o mesmo estado.
+      const [r1, r2] = await Promise.all([
+        request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(aluno2)),
+        request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(solo)),
+      ]);
+
+      const codes = [r1.status, r2.status].sort();
+      expect(codes).toEqual([200, 409]);
+
+      // E o disco tem UM só oponente — o mesmo que recebeu o 200.
+      const disco = readData('duels.json');
+      expect(disco.length).toBe(1);
+      const vencedor = r1.status === 200 ? '5' : '6';
+      expect(disco[0].opponent.userId).toBe(vencedor);
+      expect(disco[0].opponent.accepted).toBe(true);
+    });
+
+    // Mesma corrida, agora pela rota in-app: o oponente convidado aceita duas vezes de
+    // dois cliques rápidos. Aqui o esperado é 200+200 (o aceite é idempotente), mas o
+    // disco NÃO pode ter o duelo duplicado nem o `messages` do oponente zerado duas vezes.
+    it('aceites simultâneos do MESMO oponente são idempotentes e não corrompem o disco', async () => {
+      const aluno = await loginAs('aluno');
+      const aluno2 = await loginAs('aluno2');
+      const create = await request(app).post('/api/duel').set(authHeader(aluno))
+        .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system' });
+      const duelId = create.body.id;
+
+      const rs = await Promise.all([
+        request(app).post(`/api/duel/${duelId}/accept`).set(authHeader(aluno2)),
+        request(app).post(`/api/duel/${duelId}/accept`).set(authHeader(aluno2)),
+      ]);
+      expect(rs.map((r) => r.status)).toEqual([200, 200]);
+
+      const disco = readData('duels.json');
+      expect(disco.length).toBe(1);
+      expect(disco[0].opponent.userId).toBe('5');
+      expect(disco[0].opponent.accepted).toBe(true);
     });
   });
 
@@ -274,18 +294,6 @@ describe('duelos', () => {
 
   // -------------------------------------------------------------------
   describe('submit', () => {
-    it('não-participante não pode submeter → 403', async () => {
-      const aluno = await loginAs('aluno');
-      const aluno2 = await loginAs('aluno2');
-      const solo = await loginAs('solo');
-      const create = await request(app).post('/api/duel').set(authHeader(aluno))
-        .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system' });
-      const duelId = create.body.id;
-      await request(app).post(`/api/duel/${duelId}/accept`).set(authHeader(aluno2));
-      const res = await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(solo)).send({ messages: msgsA, durationSeconds: 1 });
-      expect(res.status).toBe(403);
-    });
-
     it('após 1º submit fica pending; após 2º submit vira completed com result', async () => {
       const aluno = await loginAs('aluno');
       const aluno2 = await loginAs('aluno2');
@@ -307,18 +315,65 @@ describe('duelos', () => {
 
     it('submeter em duelo já completo → 400', async () => {
       const { aluno, duelId } = await fullDuel();
-      await waitCompleted(aluno, duelId);
       const res = await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(aluno)).send({ messages: msgsA, durationSeconds: 1 });
       expect(res.status).toBe(400);
     });
   });
 
   // -------------------------------------------------------------------
+  // ACESSO — tabelas.
+  //
+  // Os 403 (não-participante) e 404 (id inexistente) estavam espalhados por 5 `describe`s,
+  // um `it` de cada vez, e por isso ficaram FUROS: `DELETE /api/duel/:id` nunca foi testado
+  // com id inexistente e `POST /:id/submit` nunca com 404. Uma tabela por rota fecha isso e
+  // torna óbvio o que falta quando uma rota nova aparecer.
+  describe('acesso: não-participante → 403 (todas as rotas de :id)', () => {
+    const rotas = [
+      ['GET',    (id) => `/api/duel/${id}`],
+      ['POST',   (id) => `/api/duel/${id}/accept`],
+      ['POST',   (id) => `/api/duel/${id}/submit`],
+      ['DELETE', (id) => `/api/duel/${id}`],
+      ['GET',    (id) => `/api/duel/${id}/export`],
+    ];
+
+    it.each(rotas)('%s %s → 403 para quem não participa', async (metodo, url) => {
+      const aluno = await loginAs('aluno');
+      const create = await request(app).post('/api/duel').set(authHeader(aluno))
+        .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system' });
+      const duelId = create.body.id;
+
+      // 'solo' (id 6) é aluno da MESMA arena — o 403 aqui é por não participar deste
+      // duelo, não por arena (esse caso vive em security.test.js).
+      const solo = await loginAs('solo');
+      const req = request(app)[metodo.toLowerCase()](url(duelId)).set(authHeader(solo));
+      const res = await (metodo === 'POST' ? req.send({ messages: msgsA, durationSeconds: 1 }) : req);
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('acesso: id inexistente → 404 (todas as rotas de :id)', () => {
+    const rotas = [
+      ['GET',    '/api/duel/nao-existe'],
+      ['POST',   '/api/duel/nao-existe/accept'],
+      ['POST',   '/api/duel/nao-existe/submit'],   // era um furo
+      ['DELETE', '/api/duel/nao-existe'],          // era um furo
+      ['GET',    '/api/duel/nao-existe/export'],
+    ];
+
+    it.each(rotas)('%s %s → 404', async (metodo, url) => {
+      const aluno = await loginAs('aluno');
+      const req = request(app)[metodo.toLowerCase()](url).set(authHeader(aluno));
+      const res = await (metodo === 'POST' ? req.send({ messages: msgsA, durationSeconds: 1 }) : req);
+      // 404 e não 403: um id que não existe não pode dar pista de autorização.
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // -------------------------------------------------------------------
   describe('resultado (empate demo 50x50)', () => {
     it('result tem o shape completo e é empate com notas iguais', async () => {
-      const { aluno, duelId } = await fullDuel();
-      const done = await waitCompleted(aluno, duelId);
-      const r = done.body.result;
+      const { duel } = await fullDuel();
+      const r = duel.result;
       expect(r).toBeTruthy();
       expect(r.winner).toBe('draw');
       expect(r.scoreChallenger).toBe(50);
@@ -331,24 +386,24 @@ describe('duelos', () => {
   });
 
   // -------------------------------------------------------------------
+  // MMR do duelo.
+  //
+  // Os casos `training → unranked` e `competitivo em calibração → unranked` VIVIAM aqui e
+  // em duel-notification.test.js. Lá eles asseram tudo isto E o `mmrDelta: null` da
+  // notificação — são estritamente mais fortes. Removidos daqui (fonte única lá).
   describe('MMR do duelo', () => {
-    it('modo training → ranked:false, reason:training', async () => {
-      const { aluno, duelId } = await fullDuel(); // sem mode → training
-      const done = await waitCompleted(aluno, duelId);
-      expect(done.body.result.mmr).toEqual({ ranked: false, reason: 'training' });
-    });
-
-    it('competitivo em calibração → ranked:false, reason:calibrating', async () => {
-      const { aluno, duelId } = await fullDuel({ mode: 'competitive' });
-      const done = await waitCompleted(aluno, duelId);
-      expect(done.body.result.mmr.ranked).toBe(false);
-      expect(done.body.result.mmr.reason).toBe('calibrating');
-    });
-
-    it('competitivo entre 2 reais fora da calibração → ranked:true com shape limpo (sem estado interno do engine)', async () => {
+    it('competitivo entre 2 reais fora da calibração → ranked, com os VALORES exatos', async () => {
       const aluno = await loginAs('aluno');
       const aluno2 = await loginAs('aluno2');
-      seedMmr({ '3': { P: 50, n: 10, W: [] }, '5': { P: 70, n: 10, W: [] } });
+      // Cenário 100% determinístico:
+      //   challenger P=50 n=10 · opponent P=70 n=10 · personagem novo (D=50) · empate 50×50.
+      //   PvP: aposta A = 0,20·50 = 10 · aposta B = 0,20·70 = 14 · pool = 24.
+      //        empate → metade pra cada (12) → deltaA = +2 · deltaB = −2.
+      //   Solo (A): S_esp = 50 + 0,5·(50−50) = 50 → S_aj = 50 → P não se move (fica 50).
+      //   Solo (B): joga contra o D já ajustado por A; K_p(10) ≈ 0,189 → P cai um pouco.
+      // Trava os NÚMEROS: com `delta > 0` / `P !== 50`, trocar o PVP_STAKE de 0,20 para
+      // 0,50 — ou inverter deltaA com deltaB — passava no teste.
+      seedMmr({ 3: { P: 50, n: 10, W: [] }, 5: { P: 70, n: 10, W: [] } });
       const create = await request(app).post('/api/duel').set(authHeader(aluno))
         .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system', mode: 'competitive' });
       const duelId = create.body.id;
@@ -359,39 +414,45 @@ describe('duelos', () => {
       const done = await waitCompleted(aluno, duelId);
       const m = done.body.result.mmr;
       expect(m.ranked).toBe(true);
+
       // shape EXATO exigido pelo front — trava o bug de vazar estado do engine
       expect(Object.keys(m).sort()).toEqual(['challenger', 'characterDifficulty', 'opponent', 'ranked']);
       for (const side of ['challenger', 'opponent']) {
         expect(Object.keys(m[side]).sort()).toEqual(['after', 'before', 'delta', 'pvpDelta']);
       }
       // NÃO pode vazar estado interno do engine
-      expect(m.playerA).toBeUndefined();
-      expect(m.playerB).toBeUndefined();
-      expect(m.resultA).toBeUndefined();
-      expect(m.resultB).toBeUndefined();
-      expect(m.pvp).toBeUndefined();
-      expect(m.character).toBeUndefined();
+      for (const k of ['playerA', 'playerB', 'resultA', 'resultB', 'pvp', 'character']) {
+        expect(m[k]).toBeUndefined();
+      }
 
-      // empate 50x50: quem tinha MMR menor (challenger) ganha pool, maior perde
+      // O pvpDelta é fechado: pool 24, empate → ±2. Qualquer mexida no PVP_STAKE quebra aqui.
+      expect(m.challenger.pvpDelta).toBe(2);
+      expect(m.opponent.pvpDelta).toBe(-2);
+      // E os deltas TOTAIS (solo + pvp) não são simétricos — o solo move cada um por conta.
+      expect(m.challenger.before).toBe(50);
+      expect(m.opponent.before).toBe(70);
       expect(m.challenger.delta).toBeGreaterThan(0);
       expect(m.opponent.delta).toBeLessThan(0);
 
-      // mmr.json foi de fato atualizado e n incrementou
+      // Disco: cada jogador com o SEU P (aqui está o bug de gravar out.playerA nos dois).
       const mmrFile = readData('mmr.json');
-      expect(mmrFile.players['3'].P).not.toBe(50);
-      expect(mmrFile.players['5'].P).not.toBe(70);
+      expect(mmrFile.players['3'].P).toBeCloseTo(52, 6);        // 50 (solo neutro) + 2 (pvp)
+      expect(mmrFile.players['5'].P).toBeLessThan(70 - 2);      // caiu no solo E perdeu 2 no pvp
       expect(mmrFile.players['3'].n).toBe(11);
+      expect(mmrFile.players['5'].n).toBe(11);
+      expect(mmrFile.players['3'].P).not.toBe(mmrFile.players['5'].P);
     });
 
     // Demanda #2 — INVERSÃO do teste antigo (`ranked:false, reason:'visitor'`). Duelo de
     // visitante agora RANQUEIA. É seguro justamente porque a D9 garante que os dois lados
     // são da mesma arena: o rating do visitante nunca entra na conta de um aluno.
-    // (O antigo montava aluno × visitante — hoje esse aceite é 403; ver security.)
-    it('visitante × visitante competitivo → RANQUEIA (D3)', async () => {
+    it('visitante × visitante competitivo → RANQUEIA, e cada um leva o SEU rating (D3)', async () => {
       const v1 = await loginVisitorFull();
       const v2 = await loginVisitorFull();
-      // Os dois fora da calibração, senão o engine devolve unranked por outro motivo.
-      seedMmr({ [v1.id]: { P: 60, n: 10, W: [] }, [v2.id]: { P: 60, n: 10, W: [] } });
+      // MMRs DIFERENTES de propósito. Com os dois em 60, um `applyDuelMmr` que gravasse
+      // `out.playerA` nos DOIS ids (copy-paste plausível) passaria despercebido — os dois
+      // teriam n=11 e P idêntico "por acaso". Assimetria = detecção.
+      seedMmr({ [v1.id]: { P: 50, n: 10, W: [] }, [v2.id]: { P: 70, n: 10, W: [] } });
 
       const create = await request(app).post('/api/duel').set(authHeader(v1.token))
         .send({ characterId: CHAR, inviteMethod: 'whatsapp', mode: 'competitive' });
@@ -404,10 +465,14 @@ describe('duelos', () => {
       const done = await waitCompleted(v1.token, duelId);
       expect(done.body.result.mmr.ranked).toBe(true);
       expect(done.body.result.mmr.reason).toBeUndefined();
-      // E o rating dos DOIS visitantes foi persistido.
+
+      // Mesmo cenário do teste acima (P 50 vs 70, empate 50×50) → mesmos números.
       const store = readData('mmr.json');
       expect(store.players[v1.id].n).toBe(11);
       expect(store.players[v2.id].n).toBe(11);
+      expect(store.players[v1.id].P).toBeCloseTo(52, 6);      // challenger: subiu 2 (pool)
+      expect(store.players[v2.id].P).toBeLessThan(68);        // opponent: perdeu 2 + solo
+      expect(store.players[v1.id].P).not.toBe(store.players[v2.id].P);
     });
   });
 
@@ -431,15 +496,6 @@ describe('duelos', () => {
       expect((await request(app).get('/api/duels/social').set(authHeader(aluno))).body).toEqual([]);
     });
 
-    it('terceiro não cancela → 403', async () => {
-      const aluno = await loginAs('aluno');
-      const create = await request(app).post('/api/duel').set(authHeader(aluno))
-        .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system' });
-      const solo = await loginAs('solo');
-      const res = await request(app).delete(`/api/duel/${create.body.id}`).set(authHeader(solo));
-      expect(res.status).toBe(403);
-    });
-
     it('não cancela duelo já aceito → 400', async () => {
       const aluno = await loginAs('aluno');
       const aluno2 = await loginAs('aluno2');
@@ -457,43 +513,44 @@ describe('duelos', () => {
     const { execFileSync } = require('child_process');
     const os = require('os');
 
-    // Além do boot, as rotas de leitura de duelo disparam a limpeza — como no
-    // All_OS. Sem isso, um duelo expirado só sumiria ao reiniciar o servidor.
+    // Além do boot, ALGUMAS rotas de leitura disparam a limpeza — como no All_OS. Sem
+    // isso, um duelo expirado só sumiria ao reiniciar o servidor.
     const EXPIRED = () => new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
     const FRESH = () => new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
 
     function seedDuels() {
-      writeData('duels.json', [
-        {
-          id: 'duel-velho', token: 'tok-velho', createdAt: EXPIRED(), status: 'completed', mode: 'training',
-          character: { id: 'fp-test-1', name: 'Sofia Test' },
-          challenger: { userId: '3', name: 'Aluno A', state: 'submitted', accepted: true, messages: [] },
-          opponent: { userId: '5', name: 'Aluno B', state: 'submitted', accepted: true, messages: [] },
-        },
-        {
-          id: 'duel-novo', token: 'tok-novo', createdAt: FRESH(), status: 'completed', mode: 'training',
-          character: { id: 'fp-test-1', name: 'Sofia Test' },
-          challenger: { userId: '3', name: 'Aluno A', state: 'submitted', accepted: true, messages: [] },
-          opponent: { userId: '5', name: 'Aluno B', state: 'submitted', accepted: true, messages: [] },
-        },
-      ]);
+      const mk = (id, createdAt) => ({
+        id, token: 'tok-' + id, createdAt, status: 'completed', mode: 'training',
+        character: { id: CHAR, name: 'Sofia Test' },
+        challenger: { userId: '3', name: 'Aluno A', state: 'submitted', accepted: true, messages: [] },
+        opponent: { userId: '5', name: 'Aluno B', state: 'submitted', accepted: true, messages: [] },
+        result: { winner: 'draw', scoreChallenger: 50, scoreOpponent: 50 },
+      });
+      writeData('duels.json', [mk('duel-velho', EXPIRED()), mk('duel-novo', FRESH())]);
     }
 
-    it('GET /api/duels/social limpa os duelos expirados', async () => {
-      seedDuels();
-      const token = await loginAs('aluno');
-      await request(app).get('/api/duels/social').set(authHeader(token)).expect(200);
-      const ids = readData('duels.json').map((d) => d.id);
-      expect(ids).toContain('duel-novo');
-      expect(ids).not.toContain('duel-velho');
-    });
+    // Tabela (rota → prune?). Os 3 testes anteriores eram o mesmo corpo com um `expect`
+    // invertido; como tabela, a assimetria fica EXPLÍCITA — e é ela o ponto:
+    //
+    // `GET /api/duel/:id` NÃO prune de propósito. É a rota de polling do DuelSession, e
+    // `pruneExpiredDuels` escreve em duels.json SEM `withFileLock` — prunar aqui poderia
+    // atropelar a escrita do resultado feita pelo `finalizeDuel`. O All_OS também só
+    // prune em /social e /export.
+    const rotas = [
+      ['GET /api/duels/social',      (id) => '/api/duels/social',            true],
+      ['GET /api/duel/:id/export',   (id) => `/api/duel/${id}/export`,       true],
+      ['GET /api/duel/:id (polling)', (id) => `/api/duel/${id}`,             false],
+    ];
 
-    it('GET /api/duel/:id/export limpa os duelos expirados', async () => {
+    it.each(rotas)('%s → prune=%s (o duelo novo sobrevive sempre)', async (_nome, url, prunes) => {
       seedDuels();
       const token = await loginAs('aluno');
-      await request(app).get('/api/duel/duel-novo/export').set(authHeader(token));
+      const res = await request(app).get(url('duel-novo')).set(authHeader(token));
+      expect(res.status).toBe(200);
+
       const ids = readData('duels.json').map((d) => d.id);
-      expect(ids).not.toContain('duel-velho');
+      expect(ids).toContain('duel-novo');                 // recente nunca some
+      expect(ids.includes('duel-velho')).toBe(!prunes);   // o expirado só some onde prune
     });
 
     it('depois de limpo, o duelo expirado dá 404 (o recente segue acessível)', async () => {
@@ -501,26 +558,12 @@ describe('duelos', () => {
       const token = await loginAs('aluno');
       // O prune roda dentro do /social; depois dele o duelo velho não existe mais.
       await request(app).get('/api/duels/social').set(authHeader(token));
-      const velho = await request(app).get('/api/duel/duel-velho').set(authHeader(token));
-      expect(velho.status).toBe(404);
-      const novo = await request(app).get('/api/duel/duel-novo').set(authHeader(token));
-      expect(novo.status).toBe(200);
-    });
-
-    // `GET /api/duel/:id` NÃO prune de propósito: o DuelSession faz polling nessa
-    // rota enquanto espera o `finalizeDuel`, e `pruneExpiredDuels` escreve em
-    // duels.json sem `withFileLock` — prunar aqui poderia atropelar a escrita do
-    // resultado. O All_OS também só prune em /social e /export.
-    it('GET /api/duel/:id não dispara o prune (rota de polling)', async () => {
-      seedDuels();
-      const token = await loginAs('aluno');
-      await request(app).get('/api/duel/duel-novo').set(authHeader(token)).expect(200);
-      expect(readData('duels.json').map((d) => d.id)).toContain('duel-velho');
+      expect((await request(app).get('/api/duel/duel-velho').set(authHeader(token))).status).toBe(404);
+      expect((await request(app).get('/api/duel/duel-novo').set(authHeader(token))).status).toBe(200);
     });
 
     // O prune também roda no boot. Como o app aqui é REQUERIDO (não é o main), esse
     // caminho só dá para exercitar num processo separado, com DATA_DIR próprio.
-
     it('remove duelo mais antigo que DUEL_TTL_MS (30d) no boot; preserva os recentes', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'genus-ttl-'));
       const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(); // 40d > 30d
@@ -576,7 +619,6 @@ describe('duelos', () => {
   describe('notificações', () => {
     it('convite gera notificação para o oponente; resultado notifica os dois lados', async () => {
       const { aluno, aluno2, duelId } = await fullDuel();
-      await waitCompleted(aluno, duelId);
 
       const rn1 = await request(app).get('/api/notifications').set(authHeader(aluno));
       expect(rn1.body.items.some((n) => n.type === 'duel_result' && n.duelId === duelId)).toBe(true);
@@ -605,7 +647,6 @@ describe('duelos', () => {
   describe('GET /api/duels/social', () => {
     it('agrupa por oponente com shape achatado wins/losses/draws e duels[]', async () => {
       const { aluno, aluno2, duelId } = await fullDuel();
-      await waitCompleted(aluno, duelId);
 
       const soc = await request(app).get('/api/duels/social').set(authHeader(aluno));
       expect(soc.body.length).toBe(1);
@@ -646,9 +687,8 @@ describe('duelos', () => {
 
   // -------------------------------------------------------------------
   describe('GET /api/duel/:id/export', () => {
-    it('participante baixa o texto do duelo concluído; não-participante → 403', async () => {
+    it('participante baixa o texto do duelo concluído', async () => {
       const { aluno, duelId } = await fullDuel();
-      await waitCompleted(aluno, duelId);
 
       const exp = await request(app).get(`/api/duel/${duelId}/export`).set(authHeader(aluno));
       expect(exp.status).toBe(200);
@@ -657,9 +697,6 @@ describe('duelos', () => {
       expect(exp.text).toContain('Sofia Test');
       expect(exp.text).toContain('Aluno A');
       expect(exp.text).toContain('Aluno B');
-
-      const solo = await loginAs('solo');
-      expect((await request(app).get(`/api/duel/${duelId}/export`).set(authHeader(solo))).status).toBe(403);
     });
 
     it('export de duelo não concluído → 400', async () => {
@@ -668,22 +705,6 @@ describe('duelos', () => {
         .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system' });
       const res = await request(app).get(`/api/duel/${create.body.id}/export`).set(authHeader(aluno));
       expect(res.status).toBe(400);
-    });
-  });
-
-  // -------------------------------------------------------------------
-  describe('GET /api/duel/:id acesso', () => {
-    it('não-participante não vê o duelo → 403', async () => {
-      const aluno = await loginAs('aluno');
-      const create = await request(app).post('/api/duel').set(authHeader(aluno))
-        .send({ characterId: CHAR, inviteMethod: 'whatsapp' });
-      const solo = await loginAs('solo');
-      expect((await request(app).get(`/api/duel/${create.body.id}`).set(authHeader(solo))).status).toBe(403);
-    });
-
-    it('duelo inexistente → 404', async () => {
-      const aluno = await loginAs('aluno');
-      expect((await request(app).get('/api/duel/nao-existe').set(authHeader(aluno))).status).toBe(404);
     });
   });
 });

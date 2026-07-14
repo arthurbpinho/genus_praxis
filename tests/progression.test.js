@@ -164,10 +164,33 @@ describe('progressão', () => {
       expect(res.body).toEqual([]);
     });
 
-    it('evaluate: visitante sem atendimento anterior → 400 (id efêmero nunca casa com logs)', async () => {
+    // ⚠ CUSTO DE IA. A feature `avaliacao` nasce DESLIGADA para o visitante justamente
+    // porque cada avaliação é uma chamada paga e um lead pode entrar aos montes. Mas a
+    // progressão gastava IA sem consultá-la — bastava o admin ligar `progressao` e o gate
+    // de custo virava letra morta. Agora ela responde `{disabled:true}` antes de gastar.
+    //
+    // (O nome antigo deste teste falava em "id efêmero": o visitante deixou de ser efêmero
+    // na demanda #1, e o teste passou a testar outra coisa sem ninguém notar.)
+    it('evaluate: visitante NÃO gasta IA quando `avaliacao` está desligada para ele', async () => {
       const visitor = await loginVisitor();
       const res = await request(app).post('/api/progression/evaluate').set(authHeader(visitor))
         .send({ characterId: 'fp-test-1', messages: msgs });
+
+      expect(res.status).toBe(200);
+      expect(res.body.disabled).toBe(true);
+    });
+
+    it('evaluate: com `avaliacao` LIGADA para o visitante, o fluxo normal volta', async () => {
+      writeData('settings.json', {
+        evaluatorEnabled: true,
+        featureAccess: { avaliacao: { aluno: true, visitante: true } },
+      });
+      const visitor = await loginVisitor();
+      const res = await request(app).post('/api/progression/evaluate').set(authHeader(visitor))
+        .send({ characterId: 'fp-test-1', messages: msgs });
+
+      // Sem atendimento anterior → 400 (a regra da progressão), NÃO mais o gate de custo.
+      expect(res.body.disabled).toBeUndefined();
       expect(res.status).toBe(400);
     });
   });

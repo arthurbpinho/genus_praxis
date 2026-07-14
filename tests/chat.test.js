@@ -40,21 +40,32 @@ describe('POST /api/chat — anti prompt-injection (systemPrompt no body)', () =
 });
 
 describe('POST /api/chat — validação de body', () => {
-  it('context ausente -> 400', async () => {
-    const aluno = await loginAs('aluno');
-    const res = await chat(aluno, { messages: [{ role: 'user', content: 'oi' }] });
-    expect(res.status).toBe(400);
-  });
+  const M = [{ role: 'user', content: 'oi' }];
+  const CTX = { type: 'freeplay', itemId: 'fp-test-1' };
 
-  it('context sem itemId -> 400', async () => {
+  // Uma tabela em vez de N testes iguais. Cada linha é uma forma DIFERENTE de o
+  // guard `!context || typeof context !== 'object' || !context.itemId` (ou o
+  // `Array.isArray(messages)`) falhar — inclusive as que um guard ingênuo deixaria
+  // passar:
+  //  - `context` string: `typeof 'x' !== 'object'` é a única coisa que a barra; sem
+  //    esse pedaço do guard, `'x'.itemId` seria undefined e daria TypeError/500.
+  //  - `context` array: array É `typeof 'object'` — só o `!context.itemId` a segura.
+  //  - `itemId: 0`: o clássico bug de guard por truthiness. Zero é um id "válido" do
+  //    ponto de vista de tipo, mas falsy — o servidor responde 400 (não 404). Se um dia
+  //    alguém trocar o guard por `context.itemId === undefined`, isto vira 404 e o teste
+  //    avisa que a semântica mudou.
+  it.each([
+    ['context ausente',                    { messages: M }],
+    ['context sem itemId',                 { context: { type: 'freeplay' }, messages: M }],
+    ['context como string',                { context: 'freeplay', messages: M }],
+    ['context como array',                 { context: [], messages: M }],
+    ['itemId: 0 (falsy, mas não ausente)', { context: { type: 'freeplay', itemId: 0 }, messages: M }],
+    ['messages não-lista (string)',        { context: CTX, messages: 'oi' }],
+    ['messages não-lista (objeto)',        { context: CTX, messages: { role: 'user' } }],
+    ['messages ausente',                   { context: CTX }],
+  ])('%s -> 400', async (_nome, body) => {
     const aluno = await loginAs('aluno');
-    const res = await chat(aluno, { context: { type: 'freeplay' }, messages: [{ role: 'user', content: 'oi' }] });
-    expect(res.status).toBe(400);
-  });
-
-  it('messages não-lista -> 400', async () => {
-    const aluno = await loginAs('aluno');
-    const res = await chat(aluno, { context: { type: 'freeplay', itemId: 'fp-test-1' }, messages: 'oi' });
+    const res = await chat(aluno, body);
     expect(res.status).toBe(400);
   });
 
@@ -63,12 +74,6 @@ describe('POST /api/chat — validação de body', () => {
   // OPENAI_API_KEY) o servidor retorna 200 ANTES de chegar nessa validação. Ou
   // seja: messages vazio/inválido -> 200 (demo), NÃO 400. Documentado, não é bug
   // de segurança (o prompt secreto continua sem vazar; ver testes abaixo).
-  it('messages array (lista de mensagens) é obrigatório mesmo em demo — não-lista -> 400', async () => {
-    const aluno = await loginAs('aluno');
-    const res = await chat(aluno, fpBody({ messages: { role: 'user' } }));
-    expect(res.status).toBe(400);
-  });
-
   it('DEMO: messages sem turno válido (só role inválido) -> 200 (validação de turnos só com OpenAI ligado)', async () => {
     const aluno = await loginAs('aluno');
     const res = await chat(aluno, fpBody({ messages: [{ role: 'system', content: 'x' }] }));

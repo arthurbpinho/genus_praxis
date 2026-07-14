@@ -778,3 +778,54 @@ morto da fixture de settings.)
 - Contexto de capacidade, deploy e arquitetura: ver `CLAUDE.md`.
 - Diferenças em relação ao All_OS: ver `DIFERENCAS.md`.
 - ⚠ `all_os/` é **somente leitura** — é a referência, nunca editar.
+
+---
+
+## 🔬 AUDITORIA DA SUÍTE (2026-07-14) — 12 BUGS REAIS, todos corrigidos
+
+Auditei os 30 arquivos de teste (7.376 linhas) procurando redundância. Encontrei redundância
+— mas o achado importante foi outro: **a suíte de 719 testes passava INTEIRA com 12 bugs
+reais no código**. Testes demais no lugar errado escondem o que não é testado.
+
+### Os bugs (todos reproduzidos antes de corrigir, todos travados por teste + mutação)
+
+| # | bug | efeito |
+|---|---|---|
+| 1 | `Number('')` é **0**, e 0 é finito | 🔴 critério que a IA deixou EM BRANCO virava zero e **derrubava a nota do aluno pela metade** (80 → 40). A correção já existia no CLIENTE (`isRealScore`); o servidor — que é quem grava a nota, o MMR e o ranking — ficou com o filtro ingênuo. |
+| 2 | o parser de notas varria o texto INTEIRO | 🔴 "o aluno interrompeu **3: 20** vezes" virava o critério 3 com nota 20 → nota **117/100** no ranking |
+| 3 | `score` do cliente entrava sem limite | 🔴 `{score: 999999}` via DevTools destruía a média e desbloqueava conquistas |
+| 4 | `reorder` de competências não checava unicidade | 🔴 `ids: ["1","1","1","1","1"]` **DESTRUÍA 4 competências** (gravava a mesma 5×), sem aviso |
+| 5 | `PUT` de competência era replace, não merge | 🔴 um PUT parcial **apagava os critérios** — o prompt do paciente passava a ser montado sem eles, e **nada falhava** |
+| 6 | `allowStudent: "false"` (string) é truthy | 🟠 o paciente ficava **liberado** com o admin achando que o bloqueou |
+| 7 | duelo em paciente bloqueado alimentava o MMR | 🔴 o `/api/logs` tinha o guard; o duelo não. Furava a demanda #7 |
+| 8 | `applyDuelMmr` não validava arena | 🔴 um duelo cross-arena legado **acoplava os dois rankings** — o que a D9 existe para impedir |
+| 9 | re-submit na janela `evaluating` | 🔴 `finalizeDuel` rodava 2× → **a mesma partida pontuava duas vezes** |
+| 10 | e-mail sem unicidade no `PUT /api/users/:id` | 🔴 um aluno **assumia o e-mail de um visitante** — e o login de visitante recupera contas por `email+phone` |
+| 11 | `dayKey` em UTC × `getHours()` local | 🟠 no Brasil, a sessão das 21h+ caía no **dia seguinte**: quem estuda à noite via a streak "pular" |
+| 12 | `extractBloco2` pegava a PRIMEIRA geração | 🟠 dois casos na mesma entrevista eram **fundidos num personagem só** |
+
+Mais: `NaN` envenenava o MMR **permanentemente** (o anti-smurf não pega NaN, porque todo
+comparativo com NaN é `false`); `lua_cheia` prometia "em dias diferentes" e desbloqueava
+com uma vigília única; a progressão gastava IA **sem** consultar a feature `avaliacao`, que
+existe justamente para conter custo; sessões ativas de paciente bloqueado viravam um beco
+sem saída (o card aparecia, o clique dava 403).
+
+### O que a auditoria diz sobre a suíte
+
+- **O harness estava cego ao fuso** (`dayKey` usava UTC, como o bug) — a suíte não *podia*
+  ver o bug 11.
+- **Um teste meu era verde por acidente**: o de double-finalize passava com o guard
+  REMOVIDO (outro guard interceptava antes). Só a mutação pegou.
+- **`custom-evaluator` "cobria" o `/api/evaluate` por `grep` no fonte** — o caminho quente
+  nunca era executado.
+- Vários testes só afirmavam `status === 200` sem conferir o disco: um handler que
+  respondesse certo e não gravasse nada passava.
+
+### Consolidação
+719 → **788 testes**, mas com **menos gordura**: as tabelas `it.each` substituíram blocos
+repetitivos, e o espaço foi para cobertura que não existia — **8 conquistas** e **as 3
+missões diárias** não tinham nenhum teste de lógica; `PUT`/`DELETE` de `/api/exercises` não
+tinham nenhum teste de autorização; o `withFileLock` (o diferencial do projeto) não tinha
+teste de concorrência — agora tem, e provei que sem ele dois aceites simultâneos dão 200/200.
+
+**Todas as 18 correções validadas por mutação.**

@@ -1,26 +1,22 @@
-// `mmrDelta` na notificação de resultado do duelo.
+// `mmrDelta` na notificação de resultado do duelo — e, junto, a fonte única dos casos
+// "duelo NÃO ranqueado" (training / calibração / só um lado calibrado). Estes viviam
+// duplicados em duel.test.js; aqui são estritamente mais fortes, porque asseram TAMBÉM o
+// `mmrDelta: null` da notificação.
 //
-// O sino mostra a variação de MMR. Duas armadilhas travadas aqui:
+// Duas armadilhas travadas neste arquivo:
 //
-//  1. Quando o duelo NÃO é ranqueado (`training`, `visitor`, `calibrating`), o
-//     `applyDuelMmr` devolve `{ranked: false, reason}` — SEM as chaves
-//     `challenger`/`opponent`. Um acesso direto quebraria o finalizeDuel.
+//  1. Quando o duelo NÃO é ranqueado, o `applyDuelMmr` devolve `{ranked: false, reason}`
+//     — SEM as chaves `challenger`/`opponent`. Um acesso direto quebraria o finalizeDuel.
 //  2. O valor enviado é o `delta` (solo + PvP), o MESMO que o card pós-duelo
-//     (`DuelSession`) exibe. Mandar `pvpDelta` faria o sino e a tela mostrarem
-//     números diferentes para a mesma partida.
+//     (`DuelSession`) exibe. Mandar `pvpDelta` faria o sino e a tela mostrarem números
+//     diferentes para a mesma partida.
 
 const {
-  app, request, resetData, readData, loginAs, authHeader, DATA_DIR,
+  app, request, resetData, readData, loginAs, authHeader,
+  seedMmr, fullDuel,
 } = require('./helpers');
-const fs = require('fs');
-const path = require('path');
 
-const CHAR = 'fp-test-1';
 const CALIBRATION_MATCHES = require('../server/mmr').CALIBRATION_MATCHES;
-
-function seedMmr(players) {
-  fs.writeFileSync(path.join(DATA_DIR, 'mmr.json'), JSON.stringify({ players, characters: {} }, null, 2));
-}
 
 /** Coloca os dois alunos fora da calibração, com MMRs distintos. */
 function seedCalibrated() {
@@ -28,34 +24,6 @@ function seedCalibrated() {
     3: { P: 62, n: CALIBRATION_MATCHES + 3, W: [] },
     5: { P: 58, n: CALIBRATION_MATCHES + 3, W: [] },
   });
-}
-
-async function waitCompleted(token, duelId, { tries = 40, delay = 15 } = {}) {
-  for (let i = 0; i < tries; i++) {
-    const r = await request(app).get(`/api/duel/${duelId}`).set(authHeader(token));
-    if (r.body && r.body.status === 'completed') return r;
-    await new Promise((res) => setTimeout(res, delay));
-  }
-  return request(app).get(`/api/duel/${duelId}`).set(authHeader(token));
-}
-
-const msgs = [
-  { role: 'user', content: 'Olá, como você está?' },
-  { role: 'assistant', content: 'Cansado.' },
-];
-
-/** Duelo completo entre aluno(3) e aluno2(5). Sem OPENAI_API_KEY → empate 50x50. */
-async function fullDuel({ mode } = {}) {
-  const aluno = await loginAs('aluno');
-  const aluno2 = await loginAs('aluno2');
-  const create = await request(app).post('/api/duel').set(authHeader(aluno))
-    .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system', mode });
-  const duelId = create.body.id;
-  await request(app).post(`/api/duel/${duelId}/accept`).set(authHeader(aluno2));
-  await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(aluno)).send({ messages: msgs, durationSeconds: 120 });
-  await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(aluno2)).send({ messages: msgs, durationSeconds: 90 });
-  const done = await waitCompleted(aluno, duelId);
-  return { aluno, aluno2, duelId, duel: done.body };
 }
 
 /** A notificação `duel_result` daquele duelo, do ponto de vista do usuário. */
@@ -67,25 +35,24 @@ async function resultNotif(token, duelId) {
 beforeEach(() => resetData());
 
 describe('duelo ranqueado: mmrDelta na notificação', () => {
-  it('envia mmrDelta para os dois lados', async () => {
+  // O ponto central: o sino e a tela do duelo não podem discordar. Este teste SUBSUME o
+  // antigo "envia mmrDelta para os dois lados", que só afirmava `Number.isFinite` — um
+  // `mmrDelta` com o número ERRADO passava nele.
+  it('mmrDelta é EXATAMENTE o delta que o card pós-duelo mostra, nos dois lados', async () => {
     seedCalibrated();
     const { aluno, aluno2, duelId, duel } = await fullDuel({ mode: 'competitive' });
     expect(duel.result.mmr.ranked).toBe(true);
+    const { challenger, opponent } = duel.result.mmr;
 
     const nA = await resultNotif(aluno, duelId);
     const nB = await resultNotif(aluno2, duelId);
+    // Finito E igual ao card: as duas coisas que o antigo teste separava.
     expect(Number.isFinite(nA.mmrDelta)).toBe(true);
     expect(Number.isFinite(nB.mmrDelta)).toBe(true);
-  });
-
-  // O ponto central: o sino e a tela do duelo não podem discordar.
-  it('mmrDelta é EXATAMENTE o delta que o card pós-duelo mostra', async () => {
-    seedCalibrated();
-    const { aluno, aluno2, duelId, duel } = await fullDuel({ mode: 'competitive' });
-    const { challenger, opponent } = duel.result.mmr;
-
-    expect((await resultNotif(aluno, duelId)).mmrDelta).toBe(challenger.delta);
-    expect((await resultNotif(aluno2, duelId)).mmrDelta).toBe(opponent.delta);
+    expect(nA.mmrDelta).toBe(challenger.delta);
+    expect(nB.mmrDelta).toBe(opponent.delta);
+    // E os dois lados não recebem o MESMO número (o challenger tem MMR maior → cai mais).
+    expect(nA.mmrDelta).not.toBe(nB.mmrDelta);
   });
 
   it('NÃO envia o pvpDelta (que é outro número)', async () => {
@@ -135,6 +102,11 @@ describe('duelo NÃO ranqueado: mmrDelta é null (e nada quebra)', () => {
 
     expect((await resultNotif(aluno, duelId)).mmrDelta).toBeNull();
     expect((await resultNotif(aluno2, duelId)).mmrDelta).toBeNull();
+
+    // E o rating dos dois ficou exatamente onde estava.
+    const store = readData('mmr.json');
+    expect(store.players['3'].n).toBe(CALIBRATION_MATCHES + 3);
+    expect(store.players['5'].n).toBe(CALIBRATION_MATCHES + 3);
   });
 
   it('competitivo mas em calibração → mmrDelta null', async () => {
@@ -145,10 +117,13 @@ describe('duelo NÃO ranqueado: mmrDelta é null (e nada quebra)', () => {
     expect((await resultNotif(aluno, duelId)).mmrDelta).toBeNull();
   });
 
-  it('só um dos dois calibrado → ainda não ranqueia', async () => {
+  it('só um dos dois calibrado → ainda não ranqueia, com reason "calibrating"', async () => {
     seedMmr({ 3: { P: 62, n: CALIBRATION_MATCHES + 1, W: [] } }); // aluno2 sem partidas
     const { aluno, duelId, duel } = await fullDuel({ mode: 'competitive' });
     expect(duel.result.mmr.ranked).toBe(false);
+    // O `reason` faltava aqui: sem ele, um bug que devolvesse 'unranked' genérico
+    // (perdendo o motivo que a UI mostra ao aluno) passaria.
+    expect(duel.result.mmr.reason).toBe('calibrating');
     expect((await resultNotif(aluno, duelId)).mmrDelta).toBeNull();
   });
 

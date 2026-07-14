@@ -4,6 +4,7 @@ const {
   app, request, resetData, readData, writeData,
   loginAs, loginVisitor, authHeader,
 } = require('./helpers');
+const fs = require('fs');
 
 beforeEach(() => resetData());
 
@@ -14,26 +15,57 @@ const get = (path, token) => request(app).get(path).set(authHeader(token));
 
 // Um data URL de imagem JPEG minúsculo, mas válido para o regex do server.
 const tinyJpeg = 'data:image/jpeg;base64,' + Buffer.from('fakejpeg').toString('base64');
+const tinyPng = 'data:image/png;base64,' + Buffer.from('fakepng').toString('base64');
 
-describe('POST /api/freeplay — autorização e allowlist', () => {
-  it('aluno -> 403', async () => {
-    const aluno = await loginAs('aluno');
-    const res = await post('/api/freeplay', aluno, { name: 'X' });
-    expect(res.status).toBe(403);
+// ---------------------------------------------------------------------
+// Autorização de ESCRITA — uma tabela em vez de seis `it` espalhados.
+//
+// ⚠ Isto FECHA UM BURACO: PUT e DELETE de /api/exercises não tinham NENHUM teste de
+// autorização. O CRUD é montado por `mountCharacterCrud`, então cada rota precisa do
+// `requireRole('admin')` por conta própria — um esquecimento em UMA delas deixaria
+// qualquer aluno editar/apagar exercício, e nada avisaria.
+describe('CRUD de personagem — todas as rotas de escrita são admin-only', () => {
+  const ROTAS = [
+    ['post', '/api/freeplay'],
+    ['put', '/api/freeplay/fp-test-1'],
+    ['delete', '/api/freeplay/fp-test-1'],
+    ['put', '/api/freeplay/fp-test-1/photo'],
+    ['post', '/api/exercises'],
+    ['put', '/api/exercises/ex-test-1'],
+    ['delete', '/api/exercises/ex-test-1'],
+  ];
+
+  it.each([['aluno'], ['prof'], ['visitante']])('%s → 403 em todas as rotas de escrita', async (papel) => {
+    const token = papel === 'visitante' ? await loginVisitor() : await loginAs(papel);
+    for (const [method, route] of ROTAS) {
+      const res = await request(app)[method](route).set(authHeader(token))
+        .send({ name: 'X', title: 'X', icon: tinyJpeg, full: tinyJpeg });
+      expect(res.status, `${method.toUpperCase()} ${route}`).toBe(403);
+    }
+    // Nenhuma dessas tentativas pode ter mexido no disco.
+    expect(readData('freeplay-characters.json').length).toBe(2);
+    expect(readData('exercises.json').length).toBe(3);
+    expect(readData('freeplay-characters.json').find((c) => c.id === 'fp-test-1').name).toBe('Sofia Test');
   });
+});
 
-  it('professor -> 403', async () => {
-    const prof = await loginAs('prof');
-    const res = await post('/api/freeplay', prof, { name: 'X' });
-    expect(res.status).toBe(403);
-  });
-
-  it('admin cria e o id é gerado no servidor com prefixo fp', async () => {
+describe('POST /api/freeplay — allowlist', () => {
+  it('admin cria, o id é gerado no servidor com prefixo fp e o personagem VAI PARA O DISCO', async () => {
     const admin = await loginAs('admin');
+    const antes = readData('freeplay-characters.json').length;
     const res = await post('/api/freeplay', admin, { name: 'Novo', age: 30 });
     expect(res.status).toBe(200);
     expect(res.body.id.startsWith('fp')).toBe(true);
     expect(res.body.name).toBe('Novo');
+
+    // O 200 da resposta não prova persistência: uma rota que respondesse o objeto
+    // montado sem gravar passaria no teste antigo.
+    const chars = readData('freeplay-characters.json');
+    expect(chars.length).toBe(antes + 1);
+    const stored = chars.find((c) => c.id === res.body.id);
+    expect(stored).toBeTruthy();
+    expect(stored.name).toBe('Novo');
+    expect(stored.age).toBe(30);
   });
 
   it('campos fora da allowlist (id, foo) NÃO são gravados', async () => {
@@ -58,12 +90,7 @@ describe('POST /api/freeplay — autorização e allowlist', () => {
   });
 });
 
-describe('POST /api/exercises — autorização e allowlist', () => {
-  it('aluno -> 403', async () => {
-    const aluno = await loginAs('aluno');
-    expect((await post('/api/exercises', aluno, { title: 'X' })).status).toBe(403);
-  });
-
+describe('POST /api/exercises — allowlist', () => {
   it('admin cria com prefixo ex e grava só EXERCISE_FIELDS', async () => {
     const admin = await loginAs('admin');
     const res = await post('/api/exercises', admin, {
@@ -81,11 +108,6 @@ describe('POST /api/exercises — autorização e allowlist', () => {
 });
 
 describe('PUT /api/freeplay/:id — atualização', () => {
-  it('aluno -> 403', async () => {
-    const aluno = await loginAs('aluno');
-    expect((await put('/api/freeplay/fp-test-1', aluno, { name: 'X' })).status).toBe(403);
-  });
-
   it('admin atualiza campo permitido', async () => {
     const admin = await loginAs('admin');
     const res = await put('/api/freeplay/fp-test-1', admin, { name: 'Renomeado' });
@@ -109,21 +131,23 @@ describe('PUT /api/freeplay/:id — atualização', () => {
 });
 
 describe('DELETE /api/freeplay/:id', () => {
-  it('aluno -> 403', async () => {
-    const aluno = await loginAs('aluno');
-    expect((await del('/api/freeplay/fp-test-1', aluno)).status).toBe(403);
-  });
-
-  it('admin remove', async () => {
+  it('admin remove só o alvo', async () => {
     const admin = await loginAs('admin');
     const res = await del('/api/freeplay/fp-test-1', admin);
     expect(res.status).toBe(200);
-    expect(readData('freeplay-characters.json').find((c) => c.id === 'fp-test-1')).toBeUndefined();
+    const chars = readData('freeplay-characters.json');
+    expect(chars.find((c) => c.id === 'fp-test-1')).toBeUndefined();
+    expect(chars.map((c) => c.id)).toEqual(['fp-test-2']); // o outro sobrevive
   });
 
-  it('DELETE é idempotente (id inexistente -> 200 ok)', async () => {
+  // "200" sozinho não prova idempotência: um `filter` com o predicado invertido apagaria
+  // TODOS os personagens e ainda responderia 200. A asserção que vale é o comprimento.
+  it('DELETE em id inexistente -> 200 e NENHUM personagem é apagado', async () => {
     const admin = await loginAs('admin');
     expect((await del('/api/freeplay/nao-existe', admin)).status).toBe(200);
+    const chars = readData('freeplay-characters.json');
+    expect(chars.length).toBe(2);
+    expect(chars.map((c) => c.id).sort()).toEqual(['fp-test-1', 'fp-test-2']);
   });
 });
 
@@ -163,12 +187,7 @@ describe('PUT /api/freeplay/:id/photo', () => {
   const photo = (token, id, body) =>
     request(app).put(`/api/freeplay/${id}/photo`).set(authHeader(token)).send(body);
 
-  it('aluno -> 403', async () => {
-    const aluno = await loginAs('aluno');
-    expect((await photo(aluno, 'fp-test-1', { icon: tinyJpeg, full: tinyJpeg })).status).toBe(403);
-  });
-
-  it('admin com data URL válido -> 200 e grava referências', async () => {
+  it('admin com data URL JPEG válido -> 200 e grava referências', async () => {
     const admin = await loginAs('admin');
     const res = await photo(admin, 'fp-test-1', { icon: tinyJpeg, full: tinyJpeg });
     expect(res.status).toBe(200);
@@ -177,24 +196,32 @@ describe('PUT /api/freeplay/:id/photo', () => {
     expect(stored.photoFull).toBeTruthy();
   });
 
-  it('base64 inválido (não é data URL de imagem) -> 400', async () => {
+  // O regex do servidor aceita jpeg|png|webp, mas só o JPEG era testado — se alguém
+  // apertasse o regex para `image/jpeg`, o AdminFreeplay quebraria com PNG e nenhum
+  // teste avisaria.
+  it('admin com data URL PNG válido -> 200 (o regex aceita png/webp, não só jpeg)', async () => {
     const admin = await loginAs('admin');
-    const res = await photo(admin, 'fp-test-1', { icon: 'lixo', full: 'lixo' });
-    expect(res.status).toBe(400);
+    const res = await photo(admin, 'fp-test-1', { icon: tinyPng, full: tinyPng });
+    expect(res.status).toBe(200);
   });
 
-  it('MIME não-imagem -> 400', async () => {
+  // Uma tabela: cada linha é uma forma diferente de o `decodeImageDataUrl` recusar.
+  // O caso do "caractere fora do alfabeto" é o que separa um regex ancorado de um
+  // `startsWith('data:image/')` ingênuo: `!` não é base64 e não pode passar.
+  it.each([
+    ['string qualquer, sem data URL → 400',          'lixo',                                                        400],
+    ['MIME não-imagem → 400',                        'data:text/plain;base64,' + Buffer.from('x').toString('base64'), 400],
+    ['MIME de imagem não suportado (svg+xml) → 400', 'data:image/svg+xml;base64,' + Buffer.from('<svg/>').toString('base64'), 400],
+    ['base64 com caractere fora do alfabeto → 400',  'data:image/jpeg;base64,abc!def',                              400],
+    ['payload > 6MB → 413',                          'data:image/jpeg;base64,' + Buffer.alloc(7 * 1024 * 1024, 0x41).toString('base64'), 413],
+  ])('%s', async (_nome, payload, esperado) => {
     const admin = await loginAs('admin');
-    const bad = 'data:text/plain;base64,' + Buffer.from('x').toString('base64');
-    const res = await photo(admin, 'fp-test-1', { icon: bad, full: bad });
-    expect(res.status).toBe(400);
-  });
-
-  it('imagem > 6MB -> 413', async () => {
-    const admin = await loginAs('admin');
-    const big = 'data:image/jpeg;base64,' + Buffer.alloc(7 * 1024 * 1024, 0x41).toString('base64');
-    const res = await photo(admin, 'fp-test-1', { icon: big, full: big });
-    expect(res.status).toBe(413);
+    const res = await photo(admin, 'fp-test-1', { icon: payload, full: payload });
+    expect(res.status).toBe(esperado);
+    // Recusa não pode gravar meia foto no personagem.
+    const stored = readData('freeplay-characters.json').find((c) => c.id === 'fp-test-1');
+    expect(stored.photoIcon).toBeUndefined();
+    expect(stored.photoFull).toBeUndefined();
   });
 
   it('{clear:true} remove as fotos', async () => {
@@ -207,19 +234,27 @@ describe('PUT /api/freeplay/:id/photo', () => {
     expect(stored.photoFull).toBeUndefined();
   });
 
-  it('path traversal no :id não escreve fora (id inexistente -> 404, nada gravado)', async () => {
+  // ⚠ O teste ANTIGO daqui era falsa confiança: mandava `../../etc/passwd` como id, o
+  // `findIndex` não achava nada e devolvia 404 — **antes** de o `isSafeId` sequer rodar.
+  // Ele passava com o guard DELETADO. O `isSafeId` só importa para um id que EXISTE no
+  // JSON (semeado, importado, ou vindo de um bug de criação), porque é aí que o fluxo
+  // chega ao `fs.writeFileSync(path.join(PATIENT_PHOTOS_DIR, id + '-icon.jpg'))`.
+  it('id perigoso que EXISTE no JSON → 400 e não escreve fora do diretório de fotos', async () => {
+    const chars = readData('freeplay-characters.json');
+    chars.push({ id: '../../../tmp/genus-pwned', name: 'Malicioso', age: 30, description: '' });
+    writeData('freeplay-characters.json', chars);
+
     const admin = await loginAs('admin');
-    const res = await photo(admin, encodeURIComponent('../../etc/passwd'), { icon: tinyJpeg, full: tinyJpeg });
-    // O findIndex não encontra o personagem -> 404 antes de qualquer write.
-    expect(res.status).toBe(404);
+    const res = await photo(admin, encodeURIComponent('../../../tmp/genus-pwned'), { icon: tinyJpeg, full: tinyJpeg });
+
+    expect(res.status).toBe(400);
+    expect(fs.existsSync('/tmp/genus-pwned-icon.jpg')).toBe(false);
   });
 
-  it('id com barra/percurso não casa uma rota de foto válida', async () => {
+  it('id inexistente → 404 (e nada é gravado)', async () => {
     const admin = await loginAs('admin');
-    // Um id com '/' bruto vira outro path; garante que não há 200.
-    const res = await request(app).put('/api/freeplay/..%2Ffoo/photo')
-      .set(authHeader(admin)).send({ icon: tinyJpeg, full: tinyJpeg });
-    expect(res.status).not.toBe(200);
+    const res = await photo(admin, 'nao-existe', { icon: tinyJpeg, full: tinyJpeg });
+    expect(res.status).toBe(404);
   });
 
   it('exercício NÃO tem rota de foto', async () => {
@@ -230,26 +265,12 @@ describe('PUT /api/freeplay/:id/photo', () => {
   });
 });
 
-describe('GET/POST /api/progress/:userId', () => {
-  it('dono lê o próprio progresso', async () => {
-    writeData('progress.json', { '3': { 'ex-test-1': true } });
-    const aluno = await loginAs('aluno');
-    const res = await get('/api/progress/3', aluno);
-    expect(res.status).toBe(200);
-    expect(res.body['ex-test-1']).toBe(true);
-  });
-
-  it('outro aluno -> 403', async () => {
-    const aluno = await loginAs('aluno');
-    expect((await get('/api/progress/5', aluno)).status).toBe(403);
-  });
-
-  it('admin lê qualquer progresso', async () => {
-    const admin = await loginAs('admin');
-    expect((await get('/api/progress/5', admin)).status).toBe(200);
-  });
-
-  it('POST faz merge (não apaga chaves anteriores)', async () => {
+// A AUTORIZAÇÃO desta rota (403 cruzado, admin lê qualquer um) e o efeito no disco de um
+// POST negado vivem em security.test.js — este bloco cobre só a SEMÂNTICA: o POST faz
+// merge, não substitui. Um `Object.assign({}, body)` no lugar do merge apagaria todo o
+// progresso do aluno a cada exercício concluído, e nenhum teste de status pegaria.
+describe('POST /api/progress/:userId — semântica de merge', () => {
+  it('POST faz merge (não apaga chaves anteriores) e persiste', async () => {
     writeData('progress.json', { '3': { a: 1 } });
     const aluno = await loginAs('aluno');
     const res = await post('/api/progress/3', aluno, { b: 2 });
@@ -258,8 +279,10 @@ describe('GET/POST /api/progress/:userId', () => {
     expect(readData('progress.json')['3']).toEqual({ a: 1, b: 2 });
   });
 
-  it('POST em outro aluno -> 403', async () => {
+  it('POST no próprio progresso não toca no progresso de OUTRO usuário', async () => {
+    writeData('progress.json', { '3': {}, '5': { intocado: true } });
     const aluno = await loginAs('aluno');
-    expect((await post('/api/progress/5', aluno, { x: 1 })).status).toBe(403);
+    await post('/api/progress/3', aluno, { novo: 1 });
+    expect(readData('progress.json')['5']).toEqual({ intocado: true });
   });
 });

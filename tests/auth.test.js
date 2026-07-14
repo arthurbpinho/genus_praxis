@@ -45,6 +45,31 @@ describe('POST /api/login', () => {
     expect(res.body).not.toHaveProperty('token');
   });
 
+  // A porta lateral do design "visitante sem senha" (D1): ele É um usuário real em
+  // users.json, com `username: visitor-<id>`, mas SEM `passwordHash`. Se o /api/login
+  // usasse `bcrypt.compare(password, user.passwordHash || '')` — como o /api/me/password
+  // faz —, ou pior, se tratasse hash ausente como "sem senha exigida", qualquer um que
+  // adivinhasse o username entraria na conta do lead. O guard certo é
+  // `user && user.passwordHash ? compare : false`.
+  it('login por username de VISITANTE (que não tem senha) → 401, com qualquer senha', async () => {
+    const v = await request(app).post('/api/login/visitor').send(visitorPayload());
+    expect(v.status).toBe(200);
+    const username = readData('users.json').find((u) => u.id === v.body.user.id).username;
+    expect(username).toMatch(/^visitor-/);
+
+    // Senha vazia nem chega ao bcrypt: cai no guard de campo obrigatório (400).
+    const vazia = await request(app).post('/api/login').send({ username, password: '' });
+    expect(vazia.status).toBe(400);
+    expect(vazia.body).not.toHaveProperty('token');
+
+    // Qualquer senha real → 401 (não há hash contra o que comparar).
+    for (const password of ['x', TEST_PASSWORD, 'undefined']) {
+      const res = await request(app).post('/api/login').send({ username, password });
+      expect(res.status, `senha ${JSON.stringify(password)}`).toBe(401);
+      expect(res.body).not.toHaveProperty('token');
+    }
+  });
+
   it('body vazio → 400', async () => {
     const res = await request(app).post('/api/login').send({});
     expect(res.status).toBe(400);

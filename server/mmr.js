@@ -37,6 +37,22 @@ const HISTORY_CAP = 200;       // teto do histórico do personagem em disco
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+// ⚠ Guarda de NaN — o engine é PÚBLICO e o `clamp(Number(x), 0, 100)` NÃO segura um
+// NaN: `Math.max(0, Math.min(100, NaN))` é NaN, e todo comparativo com NaN é `false`
+// (então nem o anti-smurf `S < 25` pegava). O resultado era um `ranked: true` que
+// gravava `P: NaN` — e, no PvP, ENVENENAVA OS DOIS jogadores de uma vez, porque a pool
+// (`S_A + S_B`) contamina os dois deltas. O NaN é permanente: qualquer partida futura
+// parte de um P que já é NaN.
+//
+// Hoje as rotas filtram a nota (`Number.isFinite` no /api/logs, `comparativeScores` no
+// duelo), então o caso não é alcançável por HTTP. Mas a defesa pertence a quem ESCREVE
+// o estado, não a quem chama. Nota inválida (NaN, undefined, '', 'abc', null) → 0, que
+// é a leitura conservadora: quem não tem nota não pontua.
+function safeScore(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? clamp(n, 0, 100) : 0;
+}
+
 function newPlayer() {
   return { P: P0, n: 0, W: [] };
 }
@@ -106,7 +122,7 @@ function updateMatch(playerIn, charIn, Sraw) {
   const character = { ...newCharacter(), ...(charIn || {}) };
   character.history = Array.isArray(charIn && charIn.history) ? [...charIn.history] : [];
 
-  const S = clamp(Number(Sraw), 0, 100);
+  const S = safeScore(Sraw);
   const nBefore = player.n;                       // partidas já concluídas
   const calibrating = nBefore < CALIBRATION_MATCHES; // partidas 1..5
 
@@ -189,8 +205,10 @@ const PVP_MIN_SCORE = 25;   // anti-smurf/win-trade: nota mínima pra ranquear
 function processDuel(playerAIn, playerBIn, charIn, S_A_raw, S_B_raw) {
   const pA = { ...newPlayer(), ...(playerAIn || {}) };
   const pB = { ...newPlayer(), ...(playerBIn || {}) };
-  const S_A = clamp(Number(S_A_raw), 0, 100);
-  const S_B = clamp(Number(S_B_raw), 0, 100);
+  // Nota inválida vira 0 → cai no anti-smurf abaixo (0 < 25) → `ranked: false`. É o
+  // desfecho seguro: um duelo cuja avaliação falhou não move o rating de ninguém.
+  const S_A = safeScore(S_A_raw);
+  const S_B = safeScore(S_B_raw);
 
   const calibratingA = pA.n < CALIBRATION_MATCHES;
   const calibratingB = pB.n < CALIBRATION_MATCHES;
@@ -263,6 +281,7 @@ module.exports = {
   P0, D0, D_MIN, D_MAX, WINDOW, CALIBRATION_MATCHES, CHAR_MATURE_AT, REGRESS_REFIT_EVERY,
   PVP_STAKE, PVP_MIN_SCORE,
   clamp,
+  safeScore,
   newPlayer,
   newCharacter,
   expectedScore,
