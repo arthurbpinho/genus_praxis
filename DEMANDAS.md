@@ -883,6 +883,30 @@ Travado por teste + mutação (restaurar o wrapper antigo quebra 2 testes).
 
 # 📥 BACKLOG NOVO (não implementado)
 
+## ▶️ COMEÇAR AQUI AMANHÃ (2026-07-15)
+
+As 8 demandas originais estão **feitas e commitadas**. O que ficou para amanhã, em ordem de
+prioridade sugerida — tudo levantado na sessão de 2026-07-14:
+
+| # | o que é | tamanho | decisão? |
+|---|---|---|---|
+| **10** | **Desligar o TTL de 30 dias dos logs** (não apagar mais automaticamente) | 2 pts | ✅ decidido: desligar |
+| **9** | **Anúncios do admin** — publicar um aviso que vira pop-up no 1º login e depois entra na lista de notificações; e **limpar as notificações genéricas** de desenvolvimento | 5 pts | ⚠ tem perguntas em aberto (ver §9) |
+
+**A #10 é a mais rápida e mais segura** — comece por ela. É trocar uma constante por uma env,
+esconder um aviso no client, e travar em teste. Detalhe completo em §10 abaixo.
+
+**A #9 precisa de 4 decisões suas antes de eu codar** (quem vê, se o visitante vê, se um
+anúncio novo reabre o pop-up de quem já viu o anterior, se é retroativo). Estão listadas em
+§9. Traga as respostas e eu implemento direto.
+
+> ⚠ **Nada de novo foi codado hoje para a #9 e a #10** — só documentado. O que foi *corrigido*
+> hoje (contradição do selo × texto da nota, e a confusão da avaliação por papel) **já está
+> commitado**. Não há retrabalho: amanhã é backlog novo, não conserto do de hoje.
+
+---
+
+
 ## 9. Anúncios do admin (pop-up no primeiro login)
 
 > As notificações atuais são genéricas, feitas em desenvolvimento — **limpar todas**. Quero
@@ -924,7 +948,31 @@ Travado por teste + mutação (restaurar o wrapper antigo quebra 2 testes).
 > "No sistema antigo tem a mensagem de que os logs serão apagados em 30 dias, mas isso não é
 > mais verdade, porque agora temos o /data, certo?"
 
-**Status:** ☐ A decidir · **Pontos: 1 (decisão) + 2 (se mudar o TTL)**
+**Status:** ☐ A fazer (amanhã) · **DECIDIDO: desligar o TTL** · **Pontos: 2**
+
+### ✅ DECISÃO DO USUÁRIO (2026-07-14): os logs NÃO expiram mais
+> "Eu não vou querer mais que os logs apaguem em 30 dias. Eles têm que ficar no /data e eu
+> vou lá apagar manualmente."
+
+**A fazer:**
+1. Desligar o `pruneExpiredLogs()` — sem apagamento automático. Sugestão: manter a
+   infraestrutura viva atrás de uma env (`LOG_TTL_DAYS`, com `0` = "nunca expira"), para dar
+   para religar sem redeploy de código se um dia mudar de ideia.
+2. `GET /api/logs/policy` passa a devolver `ttlDays: 0` (ou `null`).
+3. **A mensagem no client (`Logs.jsx`)** "Os logs expiram após 30 dias. Baixe os que quiser
+   guardar" tem que **sumir** — senão passa a mentir. Ela já lê o `/logs/policy`, então basta
+   esconder o aviso quando `ttlDays` for 0.
+4. Os `expiresAt` / `ExpiryNote` do client (o "expira em Xd" por log) também somem.
+
+**⚠ A consequência que fica (aceita pelo usuário):** sem TTL, o `logs.json` cresce para
+sempre. O arquivo é lido e reescrito INTEIRO a cada log salvo — medimos ~147 ms de event
+loop bloqueado com 14 MB (≈ 30 alunos × 30 dias). Com um ano de uso isso vira ~170 MB num
+único JSON, e o tempo de gravação passa a doer. **O teto real do projeto deixa de ser o TTL
+e passa a ser o `logs.json`.** A saída definitiva é migrar os logs para SQLite — não urgente,
+mas é o próximo teto de escala, e apagar manualmente no /data alivia mas não resolve.
+
+⚠ O **duelo** tem TTL próprio (`DUEL_TTL_MS`, 30 dias). O usuário falou só de logs — **NÃO
+mexer no duelo sem confirmar**.
 
 ### ⚠ A premissa está ERRADA — e isso importa
 
