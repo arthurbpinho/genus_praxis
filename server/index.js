@@ -988,7 +988,7 @@ const ACHIEVEMENT_DEFS = [
   { id: 'trilha_skill_4',     icon: '▲', title: 'Olho clínico',          description: 'Concluiu todos os exercícios da competência Especificidade do caso.',           tier: 'silver' },
   { id: 'trilha_skill_5',     icon: '▲', title: 'Autoconhecimento',      description: 'Concluiu todos os exercícios da competência Eu.',                               tier: 'silver' },
   { id: 'trilha_master',      icon: '◆', title: 'Programa concluído',    description: 'Concluiu todos os exercícios das 5 competências.',                              tier: 'platinum' },
-  { id: 'high_score',         icon: '★', title: 'Excelência técnica',    description: 'Atingiu pontuação ≥ 25 em uma única sessão.',                                   tier: 'gold' },
+  { id: 'high_score',         icon: '★', title: 'Excelência técnica',    description: 'Atingiu pontuação ≥ 85 em uma única sessão.',                                   tier: 'gold' },
   { id: 'speed_demon',        icon: '↗', title: 'Eficiência',            description: 'Concluiu uma sessão em menos de 5 min com pontuação positiva.',                 tier: 'silver' },
   { id: 'early_bird',         icon: '◔', title: 'Madrugador',            description: 'Realizou uma sessão antes das 7h.',                                             tier: 'bronze' },
   { id: 'night_owl',          icon: '◑', title: 'Sessão noturna',        description: 'Realizou uma sessão depois das 23h.',                                           tier: 'bronze' },
@@ -1104,7 +1104,10 @@ function computeEarnedAchievements(userLogs, streak, exercises, freeplay) {
   }
   if ([1, 2, 3, 4, 5].every((s) => earned.has(`trilha_skill_${s}`))) earned.add('trilha_master');
 
-  if (userLogs.some((l) => Number.isFinite(l.score) && l.score >= 25)) earned.add('high_score');
+  // ⚠ O limiar era 25 — herdado do All_OS, onde a trilha usava a escala −9..+9. Numa escala
+  // 0–100 unificada, 25 é uma nota FRACA, e "Excelência técnica" (tier ouro) era concedida
+  // a quase qualquer sessão avaliada. 85 corresponde ao que o nome promete.
+  if (userLogs.some((l) => Number.isFinite(l.score) && l.score >= 85)) earned.add('high_score');
   if (userLogs.some((l) => (l.durationSeconds || 9999) < 300 && Number.isFinite(l.score) && l.score > 0)) earned.add('speed_demon');
 
   // A descrição de `lua_cheia` promete "em dias DIFERENTES", mas o código só exigia que as
@@ -2130,13 +2133,28 @@ app.post('/api/evaluate', requireAuth, aiLimiter, async (req, res) => {
   try {
     const raw = await openaiChat({ openai, model: EVAL_MODEL, systemPrompt, messages: finalMessages, maxTokens: 4000, effort: process.env.OPENAI_EVAL_EFFORT || 'medium' });
 
-    // Duas famílias de avaliador, dois formatos de nota:
-    //  - customizado (exercício): emite `[NOTA:X]` já na escala do próprio prompt.
-    //  - global: emite o bloco `[notas-supervisor]` e a nota sai do scoring.js.
+    // Duas famílias de avaliador, dois formatos de nota — mas UMA escala: 0–100.
+    //  - customizado (exercício): emite `[NOTA:X]`, já convertido para 0–100 pelo wrapper.
+    //  - global: emite o bloco `[notas-supervisor]` e a nota sai do scoring.js (0–100).
     // Em ambos os casos o marcador é removido do texto que o aluno recebe.
     let payload;
     if (resolved.custom) {
       const { clean, score } = extractFinalScore(raw);
+
+      // ⚠ NÃO auto-convertemos uma nota baixa para 0–100, por mais tentador que seja.
+      // Um `[NOTA:7]` é ambíguo: pode ser um "7/10" que a IA esqueceu de converter, ou um
+      // 7/100 legítimo (sessão péssima). Multiplicar por 10 na dúvida transformaria a nota
+      // de um aluno que foi mal num 70 — silenciosamente, e a favor dele. Preferimos
+      // registrar o que veio e GRITAR no log: um avaliador mal-comportado se detecta pelo
+      // aviso, não por notas erradas em produção.
+      if (score !== null && score > 0 && score <= 10) {
+        console.warn(
+          `[avaliador] ${context && context.itemId}: [NOTA:${score}] parece estar na escala 0–10, `
+          + 'não em 0–100. A nota foi registrada como veio. Se isso se repetir, revise o prompt '
+          + 'do avaliador deste exercício (ele deve converter a nota final para 0–100).',
+        );
+      }
+
       payload = { role: 'assistant', content: clean, score };
     } else {
       const { clean, criteria } = extractSupervisorNotes(raw);

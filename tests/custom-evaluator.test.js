@@ -34,9 +34,18 @@ describe('wrapCustomEvaluatorPrompt', () => {
     expect(out).not.toContain('[notas-supervisor]');
   });
 
-  it('deixa claro que a escala é a do próprio prompt', () => {
-    const out = wrapCustomEvaluatorPrompt('x');
-    expect(out.toLowerCase()).toContain('na escala definida acima');
+  // ESCALA ÚNICA 0–100 (decisão do usuário). Antes, o wrapper mandava a IA usar "a escala
+  // definida acima neste prompt" — e os 3 avaliadores reais definem "5 eixos, máx. 10".
+  // Resultado: exercício dava 0–10, freeplay 0–100, e o <ScoreBadge> (que clampa em 0–100)
+  // pintava um 10/10 de VERMELHO como se fosse erro. A régua pedagógica do admin continua
+  // intacta — o wrapper só exige que a nota REPORTADA venha convertida.
+  it('exige a nota final em 0–100, não na escala interna do prompt', () => {
+    const out = wrapCustomEvaluatorPrompt('x').toLowerCase();
+    expect(out).toContain('0–100');
+    expect(out).toContain('converta');
+    // E instrui a NÃO mostrar a escala original ao aluno (senão o texto contradiz o selo).
+    expect(out).toContain('nunca mostre ao aluno a nota na escala original');
+    expect(out).not.toContain('na escala definida acima');
   });
 
   it('tolera prompt vazio/nulo sem quebrar', () => {

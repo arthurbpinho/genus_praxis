@@ -305,7 +305,7 @@ os opt-ins de e-mail; ChatSession perdeu o botão "Log" (.txt no cabeçalho);
 Logs não renderiza o `CriteriaTable` nem inclui `criteriaScores` no .txt exportado;
 NotificationBell não mostra o delta de MMR (o backend também não o envia).
 
-## SUÍTE DE TESTES ✅ — 575 testes, 24 arquivos
+## SUÍTE DE TESTES ✅ — 791 testes, 31 arquivos
 
 `npm test` (vitest + supertest). `npm run test:watch` para desenvolver.
 
@@ -324,14 +324,59 @@ Deve ser o **primeiro require** de todo arquivo de teste: ele seta as envs ANTES
   limiters off, `require.main` guard). Se ele falhar, a suíte inteira está mentindo.
 
 ### Cobertura
-`security` (76) · `gamification` (44) · `entrevistador` (42) · `mmr` (40) · `duel` (36)
-`crud` (32) · `chat` (23) · `logs` (23) · `mmr-pvp` (23) · `auth` (22) · `scoring` (21)
-`settings` (20) · `progression` (16) · `notifications` (14) · `ranking` (12)
-`sessions` (12) · `evaluator-notes` (11) · `duel-notification` (11) · `custom-evaluator` (19)
-`log-export` (24) · `skill-id` (19) · `crop-math` (20) · `prompt-files` (6) · `harness` (5)
+`gamification` (70) · `entrevistador` (65) · `security` (53) · `duel` (46) · `mmr` (41)
+`mmr-pvp` (35) · `auth` (34) · `settings` (31) · `skills` (31) · `crud` (29)
+`regressions` (29) · `chat` (27) · `log-export` (24) · `features` (23) · `logs` (23)
+`scoring` (21) · `crop-math` (20) · `visitor-expiry` (20) · `custom-evaluator` (19)
+`skill-id` (19) · `progression` (17) · `ranking` (16) · `visitor-form` (16)
+`patient-access` (15) · `notifications` (14) · `sessions` (12) · `evaluator-notes` (11)
+`duel-notification` (10) · `admin-users-visitor` (9) · `prompt-files` (6) · `harness` (5)
+
+`tests/regressions.test.js` é a lista do que já nos mordeu: cada bug real corrigido ganha
+um teste ali. Ao corrigir um bug, adicione-o.
+
+### ⚠ AUDITORIA DA SUÍTE (2026-07-14) — a suíte passava INTEIRA com 12 bugs reais
+Lição: **testes demais no lugar errado escondem o que não é testado.** Os 719 testes de
+então passavam com os 12 bugs abaixo (todos reproduzidos, corrigidos e travados por
+mutação — commit `3304de6`). Detalhe completo em `DEMANDAS.md`.
+
+| bug | efeito |
+|---|---|
+| `Number('')` é **0**, e 0 é finito | 🔴 critério em branco virava zero e **derrubava a nota pela metade** (80→40). A correção já existia no CLIENTE (`isRealScore`); o SERVIDOR — que é a autoridade da nota/MMR/ranking — tinha o filtro ingênuo. Agora: `toScore()` em `server/scoring.js`. |
+| o parser de notas varria o texto INTEIRO | 🔴 "interrompeu **3: 20** vezes" virava critério 3 = nota 20 → **117/100** no ranking. Agora o parser **para na linha em branco** após o bloco e só aceita chaves conhecidas (1..10, A1..B6). |
+| `score` do cliente sem limite | 🔴 `{score: 999999}` via DevTools destruía a média |
+| `reorder` de competências sem checar unicidade | 🔴 ids repetidos **DESTRUÍAM 4 competências**, sem aviso |
+| `PUT` de competência era replace, não merge | 🔴 um PUT parcial **apagava os critérios** — o prompt do paciente passava a ser montado sem eles e **nada falhava** |
+| `allowStudent: "false"` (string) é truthy | 🟠 o paciente ficava **liberado** com o admin achando que bloqueou |
+| duelo em paciente bloqueado alimentava o MMR | 🔴 o `/api/logs` tinha o guard; o duelo não |
+| `applyDuelMmr` não validava arena | 🔴 duelo cross-arena **acoplava os dois rankings** |
+| re-submit na janela `evaluating` | 🔴 `finalizeDuel` rodava 2× → **a mesma partida pontuava duas vezes** |
+| e-mail sem unicidade no `PUT /api/users/:id` | 🔴 um aluno **assumia o e-mail de um visitante** (o login de visitante recupera contas por `email+phone`) |
+| `dayKey` em UTC × `getHours()` local | 🟠 no Brasil a sessão das 21h+ caía no dia seguinte: a **streak "pulava"** para quem estuda à noite. Agora: `APP_TIMEZONE` (padrão `America/Sao_Paulo`) + `localHour()`. |
+| `extractBloco2` pegava a PRIMEIRA geração | 🟠 duas entrevistas na mesma conversa **fundiam dois personagens**. Agora ancora na ÚLTIMA (`lastSectionIndex`). |
+
+Mais: **`NaN` envenenava o MMR permanentemente** (o anti-smurf não pega `NaN` — todo
+comparativo com `NaN` é `false`; agora há `safeScore()` em `server/mmr.js`); `lua_cheia`
+prometia "em dias diferentes" e desbloqueava com uma vigília única; a **progressão gastava
+IA sem consultar a feature `avaliacao`**, que existe justamente para conter custo.
+
+O que a auditoria disse sobre a suíte, e vale como regra:
+- **O harness estava cego ao fuso** (`dayKey` em UTC, igual ao bug) — ele não *podia* ver o
+  bug 11. Fixture que repete o bug do código não testa nada.
+- **Um teste era verde por acidente**: o de double-finalize passava com o guard REMOVIDO
+  (outro guard interceptava antes). Só a mutação pegou.
+- `custom-evaluator` "cobria" o `/api/evaluate` por **grep no fonte** — o caminho quente
+  nunca era executado.
+- Vários testes só afirmavam `status === 200` **sem conferir o disco**.
+
+Cobertura nova que a auditoria abriu: **8 conquistas** e **as 3 missões diárias** não tinham
+teste de lógica; `PUT`/`DELETE` de `/api/exercises` não tinham teste de autorização; o
+`withFileLock` (o diferencial do projeto) não tinha teste de concorrência — agora tem, e sem
+ele dois aceites simultâneos dão 200/200.
 
 ### A suíte foi validada por MUTAÇÃO (não basta passar — tem que pegar bug)
-Reintroduzi cada um dos 6 bugs reais no `server/index.js` e confirmei que a suíte falha:
+Reintroduzi cada bug real no `server/index.js` e confirmei que a suíte falha. Os 12 da
+auditoria acima também foram validados assim. Amostra:
 
 | bug reintroduzido | pego por |
 |---|---|
@@ -427,25 +472,48 @@ especializado…": são system prompts, não gabaritos.
   `[LOG DO ATENDIMENTO]` é o cliente, em `buildEvaluationMessage`).
 
 ### ⚠ A escala da nota: por que `[NOTA:X]` e não o bloco de critérios
-Cada avaliador customizado traz a PRÓPRIA escala — os 3 reais usam **"5 eixos de 0 a 2
-pontos (máx. 10)"**. Mas `finalScoreFromCriteria` assume `base = nº critérios × 10`.
+Cada avaliador customizado traz a PRÓPRIA escala interna — os 3 reais usam **"5 eixos de
+0 a 2 pontos (máx. 10)"**. Mas `finalScoreFromCriteria` assume `base = nº critérios × 10`.
 Forçar o bloco `[notas-supervisor]` distorcia tudo: testei ao vivo e **a mesma sessão
 valia 7 numa escala e 40 na outra**.
-Solução (a do All_OS): o wrapper pede `[NOTA:X]` — a IA devolve a nota final já na escala
-que o próprio prompt definiu. `extractFinalScore()` remove o marcador do texto do aluno e
-usa o valor. Avaliador customizado **não** produz `criteriaScores` (não há critérios).
-`POST /api/logs` também remove um `[NOTA:X]` que sobre no texto (rede de segurança).
+Solução: o wrapper pede `[NOTA:X]` — a IA devolve a nota final numa linha de registro.
+`extractFinalScore()` remove o marcador do texto do aluno e usa o valor. Avaliador
+customizado **não** produz `criteriaScores` (não há critérios). `POST /api/logs` também
+remove um `[NOTA:X]` que sobre no texto (rede de segurança).
 
-VERIFICADO ao vivo com o avaliador real do exercício "A boca fala uma coisa, o corpo
-outra": nota 3–5 (o prompt diz "a média é 5"), marcador não vaza, sem `criteriaScores`,
-`reasoning` só para admin. Freeplay segue no avaliador global + gabarito, nota 0–100.
+Freeplay segue no avaliador global + gabarito, com nota derivada dos 6 critérios.
 
-**Consequência conhecida (igual no All_OS)**: as escalas convivem — exercício 0–10,
-freeplay 0–100. O `ScoreBadge` clampa em 0–100, então um 7 de exercício aparece como
-nota baixa (vermelha); e a conquista `high_score` (`score >= 25`) é inalcançável por
-exercício. O All_OS tem exatamente o mesmo problema (trilha era −9..+9) e o comentário
-do `ScoreBadge` dele assume: "a coloração fica aproximada, mas o badge não quebra".
-O MMR não é afetado (só olha freeplay).
+## ESCALA ÚNICA 0–100 ✅ (revoga a decisão anterior de "não corrigir o ScoreBadge")
+
+**Antes**: exercício saía em 0–10 e freeplay em 0–100. O `<ScoreBadge>` clampa em 0–100 —
+então **um 10/10 de exercício aparecia VERMELHO como "Erro"** (a nota máxima pintada como
+a pior), e a conquista `high_score` era inalcançável por exercício. Isso estava registrado
+como "defeito herdado do All_OS, decidido não corrigir". **O usuário reabriu e pediu a
+padronização.** Agora TUDO é 0–100.
+
+- `wrapCustomEvaluatorPrompt` (server/prompts.js) foi reescrito: exige a nota final em
+  **0–100**, manda a IA **converter** da escala interna do prompt, e **proíbe** mostrar a
+  escala original ao aluno — senão o selo diria 70 e o texto da devolutiva "7/10": dois
+  números para a mesma sessão.
+- **A régua pedagógica do admin fica INTACTA.** Os 5 eixos, as faixas ("9–10: Excepcional")
+  e o template de saída dos 3 avaliadores reais continuam como estão — são o *raciocínio
+  interno* da IA. Só a SAÍDA foi padronizada. Não reescreva os prompts do usuário.
+- **NÃO auto-convertemos no código (×10).** Um `[NOTA:7]` é **ambíguo**: pode ser um 7/10
+  que a IA esqueceu de converter, ou um **7/100 legítimo** (sessão péssima). Multiplicar na
+  dúvida **promoveria silenciosamente** um aluno que foi mal. Em vez disso a nota é gravada
+  como veio, e o `/api/evaluate` **grita no log** (`console.warn`) quando ela parece estar
+  em 0–10 — um avaliador mal-comportado se detecta pelo aviso, não por notas erradas em
+  produção.
+- **`high_score` subiu de `score >= 25` para `>= 85`.** O 25 era herdado do All_OS (a trilha
+  dele usava a escala −9..+9); numa escala 0–100, 25 é nota fraca e "Excelência técnica"
+  (tier **ouro**) saía quase de graça.
+
+VERIFICADO AO VIVO com a OpenAI real e o avaliador real ("A boca fala uma coisa, o corpo
+outra", que pensa em máx. 10 pts): a IA converteu, registrou `score: 80` e escreveu
+"NOTA FINAL: [80/100]" no texto que o aluno lê. Selo e devolutiva concordam; o marcador não
+vazou. Travado por teste + mutação.
+
+⚠ **É uma DIVERGÊNCIA DELIBERADA do All_OS**, que mantém o defeito. Ver `DIFERENCAS.md` §5.
 
 ## DECISÕES FECHADAS (não reabrir sem motivo)
 - `loginLimiter` fica em **20/15min** e `visitorLimiter` em **30/60min** (mais frouxos
@@ -455,7 +523,7 @@ O MMR não é afetado (só olha freeplay).
   demonstração quando ausente. Decidido pelo usuário.
 
 ### Pendências conhecidas (nada bloqueia o build)
-1. **Nada foi testado em navegador real.** A verificação é `npm test` (575),
+1. **Nada foi testado em navegador real.** A verificação é `npm test` (791),
    `vite build`, boot do servidor e curl (incluindo chamadas reais à OpenAI). As
    correções de responsividade foram feitas por leitura de CSS — **precisam de
    validação num celular de verdade** (o usuário vai testar).
@@ -577,11 +645,9 @@ A `<CriteriaTable>` consome de lá; fonte única.
 um critério ausente virava um **"0/10" inventado**. Agora só passa número real ou string
 numérica. Há teste travando os dois lados: `null` é descartado, `0` legítimo é preservado.
 
-### Decidido: NÃO corrigir o ScoreBadge
-Exercício dá nota 0–10; freeplay/duelo/progressão, 0–100. O badge clampa em 0–100, então
-**toda nota de exercício aparece vermelha ("Erro"), até um 10/10**. O All_OS tem o mesmo
-defeito e a regra do projeto é não divergir dele. Decidido pelo usuário — não "conserte"
-sem nova decisão. Detalhes em `DIFERENCAS.md` §5.
+### ScoreBadge — RESOLVIDO (a decisão de "não corrigir" foi revogada)
+Toda nota (exercício, freeplay, duelo, progressão) agora é **0–100**, então o clamp do
+badge não distorce mais nada. Ver a seção "ESCALA ÚNICA 0–100" acima e `DIFERENCAS.md` §5.
 
 ## DEPLOY — Railway (GitHub Pages aposentado)
 

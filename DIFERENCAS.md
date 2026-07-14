@@ -5,15 +5,14 @@ o mesmo motor de MMR e os mesmos prompts de avaliação, mas divergiram em arqui
 provedor de IA e escopo de produto.
 
 Este documento registra as diferenças **verificadas no código**, não as pretendidas.
-Números conferidos em 2026-07-09.
+Números conferidos em 2026-07-14.
 
 | | All_OS | Genus Práxis |
 |---|---|---|
-| `server/index.js` | 3001 linhas | 2160 linhas |
-| Rotas HTTP | 65 | 54 |
 | Provedor de IA | Anthropic (paciente) + OpenAI (avaliadores) | **100% OpenAI** |
 | Módulo Neuro | sim | **não** |
-| Testes | 8 arquivos | **20 arquivos, 497 testes** |
+| Escala da nota | exercício 0–10, freeplay 0–100 (convivem) | **0–100 em tudo** (§5) |
+| Testes | 8 arquivos | **31 arquivos, 791 testes** |
 | CSS | 1 arquivo de 3126 linhas | 646 linhas + 15 arquivos por página |
 | Deps de runtime | 10 (inclui `@anthropic-ai/sdk` e `uuid`, este sem uso) | **7** |
 
@@ -144,35 +143,47 @@ vazar as do oponente).
 Nos dois sistemas, um exercício com `evaluatorPrompt` preenchido usa **aquele prompt como
 avaliador**, não o global. A diferença está em quem faz a conta.
 
-Cada avaliador customizado traz a **própria escala** — os três exercícios reais usam
-*"5 eixos de 0 a 2 pontos, máx. 10"*. Por isso o wrapper pede `[NOTA:X]`: a IA devolve a
-nota final já na escala que o prompt definiu.
+Cada avaliador customizado traz a **própria escala interna** — os três exercícios reais
+usam *"5 eixos de 0 a 2 pontos, máx. 10"*. Por isso o wrapper pede `[NOTA:X]`, e não o
+bloco `[notas-supervisor]`: o `finalScoreFromCriteria` assume `base = nº critérios × 10`;
+forçar os 6 critérios sobre 5 eixos de 0–2 faz a mesma sessão valer **7 numa escala e 40
+na outra**. Testado ao vivo.
 
 - **All_OS**: o cliente parseia `[NOTA:X]` e manda no `saveLog`.
 - **Genus**: o **servidor** parseia (`extractFinalScore`), remove o marcador do texto do
   aluno e devolve `score`. `POST /api/logs` repete a limpeza como rede de segurança.
 
-> **Cuidado ao mexer**: forçar esses avaliadores a emitir o bloco `[notas-supervisor]`
-> (6 critérios) corrompe a nota. O `finalScoreFromCriteria` assume
-> `base = nº critérios × 10`; com 5 eixos de 0–2, a mesma sessão vale **7 numa escala e
-> 40 na outra**. Já testamos ao vivo.
+### Divergência deliberada: o Genus padronizou 0–100; o All_OS mantém o defeito
 
-**Consequência herdada do All_OS** — e mantida por decisão consciente: as escalas
-convivem. Exercício sai em 0–10 (escala do próprio avaliador); freeplay, duelo e
-progressão em 0–100.
+No **All_OS** as escalas convivem: o wrapper dele manda *"use a escala que sua avaliação
+considerar apropriada"*, então exercício sai em 0–10 e freeplay/duelo/progressão em 0–100.
+O `ScoreBadge` clampa em 0–100 e colore por faixa (`≤22` vermelho … `≥81` verde) — logo
+**toda nota de exercício cai na faixa vermelha "Erro", inclusive um 10/10 perfeito**: a
+nota máxima pintada como a pior possível. E a conquista `high_score` (`score >= 25`, limiar
+herdado de quando a trilha usava −9..+9) fica inalcançável por exercício. O comentário do
+`ScoreBadge` do All_OS assume o problema: *"notas fora de 0-100 são clampadas… a coloração
+fica aproximada"*.
 
-O `ScoreBadge` clampa em 0–100 e colore por faixa (`≤22` vermelho … `≥81` verde), então
-**toda nota de exercício cai na faixa vermelha "Erro" — inclusive um 10/10 perfeito**.
-A conquista `high_score` (`score >= 25`) também é inalcançável por exercício. O MMR não é
-afetado (só olha freeplay).
+O **Genus corrigiu**. Hoje **toda** nota é 0–100:
 
-O All_OS tem o mesmo comportamento: o wrapper dele manda "use a escala que sua avaliação
-considerar apropriada", o cliente só arredonda, e o comentário do `ScoreBadge` dele
-assume — *"notas fora de 0-100 são clampadas… a coloração fica aproximada"*.
+- `wrapCustomEvaluatorPrompt` exige a nota final em **0–100**, manda a IA **converter** da
+  escala interna do prompt e **proíbe** mostrar a escala original ao aluno — senão o selo
+  diria 70 e o texto da devolutiva "7/10": dois números para a mesma sessão.
+- **A régua pedagógica do admin fica intacta.** Os 5 eixos e as faixas ("9–10: Excepcional")
+  dos avaliadores reais continuam como estão — são o *raciocínio interno* da IA. Só a
+  **saída** foi padronizada; os prompts do usuário não foram reescritos.
+- **Não há auto-conversão no código (×10).** Um `[NOTA:7]` é **ambíguo**: pode ser um 7/10
+  que a IA esqueceu de converter, ou um **7/100 legítimo** (sessão péssima). Multiplicar na
+  dúvida promoveria silenciosamente um aluno que foi mal — pior que o bug original. A nota é
+  gravada como veio e o `/api/evaluate` **grita no log** (`console.warn`) quando ela parece
+  estar em 0–10: um avaliador mal-comportado se detecta pelo aviso, não por notas erradas em
+  produção.
+- `high_score` subiu de `>= 25` para **`>= 85`**: numa escala 0–100, 25 é nota fraca, e
+  "Excelência técnica" (tier ouro) saía quase de graça.
 
-> **Não conserte isso sem decisão de produto.** Foi avaliado e mantido para não divergir
-> do All_OS. As saídas seriam: (a) o wrapper exigir `[NOTA:X]` em 0–100; (b) uma prop
-> `max` no badge. Ambas afastam o Genus do original.
+Verificado ao vivo com a OpenAI real e o avaliador real ("A boca fala uma coisa, o corpo
+outra"): a IA converteu, registrou `score: 80` e escreveu "NOTA FINAL: [80/100]" no texto do
+aluno. Selo e devolutiva concordam. Travado por teste + mutação.
 
 ---
 
@@ -195,7 +206,7 @@ fork:
    `requireRole('admin')`. Restaurado.
 
 > Moral: as três regressões passariam despercebidas se o porte tivesse trazido também a
-> suíte de testes do All_OS. Foi o que motivou os 497 testes de hoje (ver §7).
+> suíte de testes do All_OS. Foi o que motivou os 791 testes de hoje (ver §7).
 
 Os dois rejeitam `systemPrompt` no body de `/api/chat` com **400** (anti
 prompt-injection). O Genus acrescenta que `criteriaScores`/`reasoning` só vão para
@@ -218,7 +229,7 @@ regressões esquecidas.
 
 ## 7. Testes
 
-O All_OS tem 8 arquivos. O Genus tem **20 arquivos, 497 testes**, e o harness
+O All_OS tem 8 arquivos. O Genus tem **31 arquivos, 791 testes**, e o harness
 (`tests/helpers.js`) garante três invariantes:
 
 - `DATA_DIR` é um tmpdir por processo — **nunca toca `server/data/`**;
@@ -232,6 +243,23 @@ A suíte foi validada por **mutação**: cada bug real já corrigido foi reintro
 servidor, um a um, para confirmar que a suíte falha. Um deles (`avaliador.md`) não era
 pego por nenhum teste de HTTP — daí `tests/prompt-files.test.js`, que verifica no
 código-fonte e no disco que todo prompt referenciado existe.
+
+`tests/regressions.test.js` é a lista do que já nos mordeu: um teste por bug real corrigido.
+
+### Contar testes não é medir cobertura
+Vale registrar com honestidade: numa auditoria (2026-07-14) a suíte de então — **719 testes,
+todos verdes** — passava com **12 bugs reais no código**, entre eles um que derrubava a nota
+do aluno pela metade (`Number('')` é 0) e outro que produzia **117/100** no ranking (o parser
+varria o texto inteiro). Os 12 estão listados em `CLAUDE.md` e `DEMANDAS.md`.
+
+Três padrões explicam o falso verde, e valem como regra em qualquer suíte:
+- **fixture que repete o bug do código não testa nada** — o harness usava `dayKey` em UTC,
+  igual ao bug de fuso, e por isso não *podia* vê-lo;
+- **teste verde por acidente** — o de double-finalize passava com o guard removido, porque
+  outro guard interceptava antes. Só a mutação pegou;
+- **`grep` no fonte não é execução** — o `custom-evaluator` "cobria" o `/api/evaluate` sem
+  nunca rodar o caminho quente. E vários testes afirmavam `status === 200` sem conferir o
+  disco: um handler que respondesse certo e não gravasse nada passava.
 
 ---
 
@@ -287,6 +315,12 @@ número de verdade ou string numérica — e a nota **0 legítima** continua apa
 Rótulos e ordenação vivem em `client/src/logFiles.js` (módulo puro), fonte única para a
 tabela e para o `.txt`.
 
+> ⚠ A correção ficou meses **só no cliente**. O **servidor** — que é quem calcula a nota,
+> alimenta o MMR e o ranking — manteve o filtro ingênuo, e um critério deixado em branco
+> pela IA **derrubava a nota do aluno pela metade** (80 → 40). Hoje a guarda vive em
+> `toScore()` (`server/scoring.js`) e o cliente é só o espelho dela. Lição: corrigir na
+> borda não corrige a autoridade.
+
 ---
 
 ## 9. Deploy
@@ -311,6 +345,7 @@ Dois detalhes que quebram um deploy limpo se esquecidos:
 ## Resumo em uma frase
 
 O Genus Práxis é o All_OS **sem neuro e sem Anthropic**, com escrita de arquivo segura
-sob concorrência, avaliação não-streaming, três furos de segurança fechados, CSS
-modularizado e uma suíte de testes 2,5× maior validada por mutação — ao custo de algumas
-telas menos completas e de rate limiters deliberadamente mais permissivos.
+sob concorrência, avaliação não-streaming, nota **padronizada em 0–100**, três furos de
+segurança fechados, CSS modularizado e uma suíte de testes 4× maior validada por mutação —
+ao custo de algumas telas menos completas e de rate limiters deliberadamente mais
+permissivos.

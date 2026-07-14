@@ -829,3 +829,51 @@ tinham nenhum teste de autorização; o `withFileLock` (o diferencial do projeto
 teste de concorrência — agora tem, e provei que sem ele dois aceites simultâneos dão 200/200.
 
 **Todas as 18 correções validadas por mutação.**
+
+---
+
+## 📏 ESCALA ÚNICA 0–100 (2026-07-14) — revoga uma decisão anterior
+
+**Antes:** exercício dava nota **0–10** (os 3 avaliadores customizados definem "5 eixos de
+0–2, máx. 10" dentro do próprio prompt) e freeplay dava **0–100**. O `<ScoreBadge>` clampa
+em 0–100 — então **um 10/10 de exercício aparecia em VERMELHO como "Erro"**: a nota máxima
+pintada como a pior possível. E a conquista `high_score` era inalcançável por exercício.
+
+Isso estava registrado como "defeito herdado do All_OS, decidido não corrigir". **O usuário
+reabriu e pediu a padronização.**
+
+### Como foi feito (sem tocar no material pedagógico)
+
+A escala 0–10 está **entranhada nos prompts do usuário**: os 5 eixos, as faixas de
+referência ("9–10: Excepcional", "7–8: Muito bom") e o template de saída ("NOTA FINAL:
+[X/10]"). Reescrevê-los seria mexer na pedagogia.
+
+A saída foi mexer só no **wrapper** (`wrapCustomEvaluatorPrompt`, que é código nosso):
+- a régua interna do admin fica **intacta** — é o raciocínio da IA;
+- o wrapper exige que a nota **reportada** seja convertida para 0–100;
+- e proíbe mostrar a escala original ao aluno — senão o selo diria **70** e o texto da
+  devolutiva diria **"7/10"**: dois números para a mesma sessão.
+
+### ⚠ Por que NÃO auto-convertemos no código (×10)
+
+Seria tentador multiplicar por 10 qualquer nota ≤ 10. **É armadilha.** Um `[NOTA:7]` é
+**ambíguo**: pode ser um "7/10" que a IA esqueceu de converter — ou um **7/100 legítimo**
+(sessão péssima). Converter na dúvida **promoveria silenciosamente a 70 um aluno que foi
+mal**, e a favor dele. Pior que o bug original.
+
+Em vez disso: a nota é registrada **como veio**, e o `/api/evaluate` **grita no log**
+(`console.warn`) quando ela parece estar em 0–10. Um avaliador mal-comportado se detecta
+pelo aviso, não por notas erradas em produção.
+
+### Efeito colateral corrigido junto
+`high_score` exigia `score >= 25` — limiar herdado do All_OS, onde a trilha usava a escala
+**−9..+9**. Numa escala 0–100, 25 é nota **fraca**, e "Excelência técnica" (tier **ouro**)
+saía quase de graça. Subiu para **85**.
+
+### Verificado AO VIVO com a OpenAI real
+Avaliador real ("A boca fala uma coisa, o corpo outra", que pensa em máx. 10 pts):
+a IA **converteu**, registrou `score: 80` e escreveu **"NOTA FINAL: [80/100]"** no texto que
+o aluno lê. Selo e devolutiva concordam; o marcador `[NOTA:]` não vazou.
+
+Travado por teste + mutação (restaurar o wrapper antigo quebra 2 testes).
+**É uma divergência deliberada do All_OS**, que mantém o defeito.

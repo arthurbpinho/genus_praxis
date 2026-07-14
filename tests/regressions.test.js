@@ -479,3 +479,56 @@ describe('competências não podem ter nome duplicado', () => {
     expect(mesma.status).toBe(200);
   });
 });
+
+// =====================================================================
+// 8. ESCALA ÚNICA 0–100 (decisão do usuário, 2026-07-14)
+// =====================================================================
+describe('escala: exercício e freeplay usam a MESMA régua (0–100)', () => {
+  // Antes: exercício dava 0–10 (os avaliadores customizados definem "5 eixos, máx. 10") e
+  // freeplay dava 0–100. O <ScoreBadge> clampa em 0–100, então **um 10/10 de exercício
+  // aparecia em VERMELHO como "Erro"** — a nota máxima pintada como a pior possível. E a
+  // conquista `high_score` era inalcançável por exercício.
+  //
+  // A régua pedagógica do admin (5 eixos de 0–2, faixas "9–10: Excepcional") fica INTACTA:
+  // é o raciocínio interno da IA. O wrapper só exige que a nota REPORTADA venha convertida.
+  const { wrapCustomEvaluatorPrompt } = require('../server/prompts');
+
+  it('o wrapper pede 0–100 e proíbe mostrar a escala original ao aluno', () => {
+    const out = wrapCustomEvaluatorPrompt('Some 5 eixos de 0 a 2 pontos (máx. 10).');
+    // A régua do admin sobrevive…
+    expect(out).toContain('Some 5 eixos de 0 a 2 pontos (máx. 10).');
+    // …mas a saída é padronizada.
+    expect(out).toContain('0–100');
+    expect(out.toLowerCase()).toContain('converta');
+    // Senão o selo diria 70 e o texto "7/10" — dois números para a mesma sessão.
+    expect(out.toLowerCase()).toContain('nunca mostre ao aluno a nota na escala original');
+  });
+
+  // ⚠ NÃO auto-convertemos. Um `[NOTA:7]` é AMBÍGUO: pode ser um "7/10" não convertido, ou
+  // um 7/100 legítimo (sessão péssima). Multiplicar por 10 na dúvida promoveria um aluno
+  // que foi mal a um 70 — silenciosamente. Registramos o que veio e avisamos no log.
+  it('uma nota baixa é registrada COMO VEIO (não é promovida a ×10)', async () => {
+    const admin = await loginAs('admin');
+    await request(app).post('/api/logs').set(authHeader(admin)).send({
+      type: 'exercise', itemId: 'ex-test-1', mode: 'training',
+      messages: [{ role: 'user', content: 'oi' }],
+      evaluation: 'Sessão fraca. [NOTA:7]',
+    });
+    // 7 continua 7. Um aluno que foi mal não vira "70" por heurística.
+    expect(readData('logs.json')[0].score).toBe(7);
+  });
+
+  it('a nota máxima de um exercício (100) cai na MELHOR faixa do badge, não na pior', async () => {
+    const admin = await loginAs('admin');
+    await request(app).post('/api/logs').set(authHeader(admin)).send({
+      type: 'exercise', itemId: 'ex-test-1', mode: 'training',
+      messages: [{ role: 'user', content: 'oi' }],
+      evaluation: 'Excelente. [NOTA:100]',
+    });
+    const score = readData('logs.json')[0].score;
+    expect(score).toBe(100);
+    // O <ScoreBadge> pinta > 80 como a melhor faixa (f5). Antes, um "10" caía em f1
+    // (<= 22) — vermelho, "Erro" — que é exatamente o bug que a padronização fecha.
+    expect(score).toBeGreaterThan(80);
+  });
+});

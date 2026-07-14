@@ -276,9 +276,11 @@ describe('conquistas (achievements)', () => {
       nao: () => [],
     },
     {
+      // O limiar era 25 — herdado do All_OS (escala −9..+9 da trilha). Numa escala 0–100
+      // unificada, 25 é nota FRACA e "Excelência técnica" (ouro) saía quase de graça.
       id: 'high_score',
-      ok: () => [makeLog({ score: 25 })],
-      nao: () => [makeLog({ score: 24 })],   // threshold é >= 25
+      ok: () => [makeLog({ score: 85 })],
+      nao: () => [makeLog({ score: 84 })],
     },
     {
       id: 'speed_demon',

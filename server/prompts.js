@@ -119,12 +119,19 @@ ${specificInstruction || '(sem instrução específica — aja como um paciente 
 // Wrapper aplicado quando o admin define um avaliador próprio para um exercício
 // da trilha (campo `evaluatorPrompt`). Ele vira o system prompt daquela avaliação.
 //
-// Por que `[NOTA:X]` e não o bloco `[notas-supervisor]` do avaliador global:
-// cada avaliador customizado traz a PRÓPRIA escala (os três exercícios reais usam
+// Por que `[NOTA:X]` e não o bloco `[notas-supervisor]` do avaliador global: cada
+// avaliador customizado traz a PRÓPRIA régua interna (os três exercícios reais usam
 // "5 eixos de 0 a 2 pontos, máx. 10"). O `finalScoreFromCriteria` assume
-// `base = nº de critérios × 10`, então forçar o bloco de critérios distorceria a
-// nota — a mesma sessão valia 7 numa escala e 40 na outra. Aqui a IA devolve a
-// nota final já na escala que o próprio prompt definiu, como no All_OS.
+// `base = nº de critérios × 10`, então forçar o bloco de critérios distorceria a nota.
+//
+// ⚠ ESCALA ÚNICA 0–100 (decisão do usuário). Antes, exercício dava nota 0–10 e freeplay
+// 0–100 — o `<ScoreBadge>` clampa em 0–100, então **um 10/10 de exercício aparecia em
+// vermelho como "Erro"**, e a conquista `high_score` era inalcançável por exercício.
+//
+// A régua pedagógica do admin (os 5 eixos, as faixas "9–10: Excepcional") fica INTACTA:
+// ela é o raciocínio da IA. O que padronizamos é só a SAÍDA — a nota que o sistema
+// registra e o número que o aluno lê. Pedimos os dois na mesma escala, para o selo e o
+// texto da devolutiva nunca se contradizerem.
 function wrapCustomEvaluatorPrompt(adminPrompt) {
   return `${(adminPrompt || '').trim()}
 
@@ -132,11 +139,23 @@ function wrapCustomEvaluatorPrompt(adminPrompt) {
 
 ## FORMATO OBRIGATÓRIO DE SAÍDA
 
-Escreva a devolutiva para o aluno normalmente. Ao final, inclua OBRIGATORIAMENTE esta linha, exatamente neste formato (ela é lida pelo sistema e removida antes de o aluno ver o texto):
+Escreva a devolutiva para o aluno normalmente.
+
+### Escala da nota final: 0 a 100
+
+O prompt acima pode descrever a avaliação numa escala própria (por exemplo, somando eixos até 10 pontos). Use essa escala como seu raciocínio interno — mas **converta a nota final para 0–100 proporcionalmente** antes de reportá-la.
+
+Exemplos de conversão: 7/10 → 70. 8,5/10 → 85. 4/5 → 80. 10/10 → 100.
+
+**Sempre que você escrever a nota no texto da devolutiva, escreva-a já em 0–100** (ex.: "NOTA FINAL: 70/100"). Nunca mostre ao aluno a nota na escala original — ele vê apenas 0–100, e um número diferente do registrado pelo sistema o confundiria.
+
+### Linha de registro
+
+Ao final, inclua OBRIGATORIAMENTE esta linha, exatamente neste formato (ela é lida pelo sistema e removida antes de o aluno ver o texto):
 
 [NOTA:X]
 
-Onde X é a nota final que você atribui, na escala definida acima neste prompt. Use ponto ou vírgula para decimais. Sem essa linha, o sistema não consegue registrar a pontuação da sessão.`;
+Onde X é a nota final **na escala 0–100**. Use ponto ou vírgula para decimais. Sem essa linha, o sistema não consegue registrar a pontuação da sessão.`;
 }
 
 module.exports = {
