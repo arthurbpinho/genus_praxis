@@ -915,3 +915,47 @@ Travado por teste + mutação (restaurar o wrapper antigo quebra 2 testes).
   senão o segundo anúncio nunca apareceria.)
 - **Retroativo?** Quem se cadastrar amanhã vê o anúncio de hoje? (Provavelmente sim, se ele
   ainda estiver publicado.)
+
+
+---
+
+## 10. Explicar (e decidir) a persistência de dados no Railway
+
+> "No sistema antigo tem a mensagem de que os logs serão apagados em 30 dias, mas isso não é
+> mais verdade, porque agora temos o /data, certo?"
+
+**Status:** ☐ A decidir · **Pontos: 1 (decisão) + 2 (se mudar o TTL)**
+
+### ⚠ A premissa está ERRADA — e isso importa
+
+**O volume e o TTL são coisas diferentes, e o TTL continua ATIVO.**
+
+| | o que faz | o volume `/data` resolve? |
+|---|---|---|
+| **Volume do Railway** | os arquivos **sobrevivem ao redeploy**. Sem ele, todo deploy zerava tudo. | — |
+| **TTL de 30 dias** | `pruneExpiredLogs()` **APAGA do `logs.json`** todo log com mais de 30 dias | ❌ **NÃO.** O prune deleta o dado; o volume só garante que o arquivo persista entre deploys. |
+
+Conferido no código (`server/index.js`): `LOG_TTL_DAYS = 30`, e `pruneExpiredLogs()` roda a
+cada `GET /api/logs`, reescrevendo o arquivo **sem** os logs vencidos. É deleção real, não
+uma flag de "oculto".
+
+**Ou seja: a mensagem que o aluno vê ("Os logs expiram automaticamente após 30 dias. Baixe os
+que quiser guardar antes disso.") está CORRETA e continuará valendo no Railway.** Se subirmos
+assim, os logs dos alunos **serão apagados** aos 30 dias — inclusive as avaliações da IA.
+
+### O que precisa ser decidido
+1. **Manter o TTL de 30 dias?** Era uma escolha de contenção (o `logs.json` é reescrito
+   inteiro a cada gravação; medimos ~147 ms de event loop bloqueado com 14 MB). Sem TTL, o
+   arquivo cresce para sempre — e esse é o próximo teto de escala do projeto.
+2. **Ou aumentar / desligar?** `LOG_TTL_DAYS` é uma constante — mudar é trivial. O custo não
+   é o código, é o desempenho: com 30 alunos × 5 sessões/semana, 30 dias ≈ 14 MB. Um ano
+   seria ~170 MB num único JSON lido e reescrito a cada log salvo. **Aí o TTL deixa de ser o
+   problema e o `logs.json` passa a ser** — a saída real seria migrar para SQLite.
+3. **Se mudar, a mensagem do client (`Logs.jsx`) tem que mudar junto** — ela lê o
+   `GET /api/logs/policy`, então acompanha sozinha o `ttlDays`. Mas o texto "Baixe os que
+   quiser guardar" precisa sumir se não houver mais expiração.
+
+### O que já está resolvido (não confundir)
+- O **volume** está configurado (`DATA_DIR=/data` + mount no Railway), e sem ele o deploy
+  falha no healthcheck (`/api/health` responde 503 se o diretório não for gravável).
+- O **duelo** tem TTL próprio (`DUEL_TTL_MS`, 30 dias) — mesma discussão, escopo menor.
