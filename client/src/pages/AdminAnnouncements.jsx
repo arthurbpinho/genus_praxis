@@ -3,16 +3,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../api';
 import Typewriter from '../components/Typewriter';
+import {
+  ANNOUNCEMENT_ROLES as ROLES, toggleRole, validateAnnouncement, audienceLabel,
+} from '../announcementForm';
 import '../styles/Admin.css';
-
-// Os papéis que podem ser público de um anúncio. `visitor` incluído (decisão do usuário).
-const ROLES = [
-  { key: 'therapist', label: 'Alunos' },
-  { key: 'visitor', label: 'Visitantes' },
-  { key: 'supervisor', label: 'Professores' },
-  { key: 'admin', label: 'Administradores' },
-];
-const roleLabel = (k) => (ROLES.find((r) => r.key === k) || {}).label || k;
 
 export default function AdminAnnouncements() {
   const [list, setList] = useState([]);
@@ -35,16 +29,16 @@ export default function AdminAnnouncements() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  function toggleRole(key) {
+  function handleToggleRole(key) {
     setOk('');
-    setRoles((r) => (r.includes(key) ? r.filter((x) => x !== key) : [...r, key]));
+    setRoles((r) => toggleRole(r, key));
   }
 
   async function publicar(e) {
     e.preventDefault();
     setError(''); setOk('');
-    if (!title.trim()) return setError('O título é obrigatório.');
-    if (!body.trim()) return setError('O texto é obrigatório.');
+    const problems = validateAnnouncement({ title, body });
+    if (problems.title || problems.body) return setError(problems.title || problems.body);
     setSaving(true);
     try {
       await api.adminCreateAnnouncement({ title: title.trim(), body: body.trim(), roles });
@@ -108,7 +102,7 @@ export default function AdminAnnouncements() {
           <div className="announcement-roles">
             {ROLES.map((r) => (
               <label key={r.key} className={`role-chip ${roles.includes(r.key) ? 'on' : ''}`}>
-                <input type="checkbox" checked={roles.includes(r.key)} onChange={() => toggleRole(r.key)} />
+                <input type="checkbox" checked={roles.includes(r.key)} onChange={() => handleToggleRole(r.key)} />
                 {r.label}
               </label>
             ))}
@@ -136,7 +130,7 @@ export default function AdminAnnouncements() {
                   <div className="feature-matrix-desc"><span className="clamp-2">{a.body}</span></div>
                 </td>
                 <td style={{ color: 'var(--text-soft)' }}>
-                  {!a.roles || a.roles.length === 0 ? 'Todos' : a.roles.map(roleLabel).join(', ')}
+                  {audienceLabel(a.roles)}
                 </td>
                 <td style={{ color: 'var(--text-muted)' }}>{a.createdAt ? new Date(a.createdAt).toLocaleDateString('pt-BR') : '—'}</td>
                 <td>

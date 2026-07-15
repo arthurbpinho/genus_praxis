@@ -205,6 +205,7 @@
 .admin-page .feature-check input {
   width: 18px;
   height: 18px;
+  padding: 0;   /* anula o padding da regra global de input (index.css) */
   accent-color: var(--accent);
   cursor: pointer;
 }
@@ -236,7 +237,7 @@
   height: 44px;
   cursor: pointer;
 }
-.access-check input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.access-check input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); cursor: pointer; }
 .access-check input:disabled { opacity: 0.5; cursor: wait; }
 
 /* Prazo do acesso do visitante (demanda #8). */
@@ -278,4 +279,17 @@
   user-select: none;
 }
 .role-chip.on { border-color: var(--accent); color: var(--accent); background: rgba(255, 122, 26, 0.1); }
-.role-chip input { accent-color: var(--accent); }
+.role-chip:hover { border-color: var(--accent); }
+/* ⚠ A regra GLOBAL `input { width:100%; padding; border }` (index.css) se aplicava a este
+   checkbox e o transformava numa caixa de largura total com borda — quebrando o chip. Aqui
+   ele volta ao tamanho natural de um checkbox. */
+.role-chip input {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border-radius: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
