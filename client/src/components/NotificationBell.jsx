@@ -30,9 +30,27 @@ export default function NotificationBell({ user }) {
 
   async function load() {
     try {
-      const data = await api.getNotifications();
-      setItems(data.items || []);
-      setUnread(data.unread || 0);
+      // Duas fontes: as notificações de duelo (com read/unread por usuário) e os anúncios
+      // do admin do tipo `notification` (demanda #12) — que, depois do pop-up, moram aqui.
+      const [data, history] = await Promise.all([
+        api.getNotifications(),
+        api.getAnnouncementsHistory().catch(() => ({ notifications: [] })),
+      ]);
+
+      const duelItems = data.items || [];
+      // O anúncio já foi confirmado no pop-up; no sino ele é HISTÓRICO informativo — entra
+      // como "lido" e NÃO conta para o badge de não-lidos (senão o contador nunca zeraria).
+      const annItems = (history.notifications || []).map((a) => ({
+        id: a.id, kind: 'announcement', title: a.title, body: a.body,
+        createdAt: a.createdAt, read: true,
+      }));
+
+      // Ordena tudo por data, mais recente primeiro.
+      const all = [...duelItems, ...annItems]
+        .sort((x, y) => new Date(y.createdAt || 0) - new Date(x.createdAt || 0));
+
+      setItems(all);
+      setUnread(data.unread || 0);   // só os duelos contam para o badge
     } catch {
       // silêncio — sino é best-effort
     }
@@ -56,6 +74,8 @@ export default function NotificationBell({ user }) {
 
   async function handleClick(n) {
     setOpen(false);
+    // Anúncio do admin: é só informativo, não tem rota nem estado de leitura no servidor.
+    if (n.kind === 'announcement') return;
     try { await api.markNotificationRead(n.id); } catch {}
     load();
     if (n.type === 'duel_invite') {
@@ -100,13 +120,23 @@ export default function NotificationBell({ user }) {
               items.map((n) => (
                 <button
                   key={n.id}
-                  className={`notif-item ${n.read ? '' : 'unread'}`}
+                  className={`notif-item ${n.read ? '' : 'unread'} ${n.kind === 'announcement' ? 'is-announcement' : ''}`}
                   onClick={() => handleClick(n)}
                 >
                   <span className="notif-item-icon">
-                    {n.type === 'duel_invite' ? '⚔' : n.outcome === 'win' ? '★' : n.outcome === 'loss' ? '◇' : '=' }
+                    {n.kind === 'announcement' ? '📢'
+                      : n.type === 'duel_invite' ? '⚔'
+                      : n.outcome === 'win' ? '★' : n.outcome === 'loss' ? '◇' : '='}
                   </span>
                   <span className="notif-item-body">
+                    {n.kind === 'announcement' ? (
+                      <>
+                        <strong>{n.title}</strong>
+                        {n.body ? <span className="notif-ann-body">{n.body}</span> : null}
+                        <span className="notif-item-time">{timeAgo(n.createdAt)}</span>
+                      </>
+                    ) : (
+                    <>
                     {/* O backend do Genus já monta a frase completa em `title`
                         (ex.: "Fulano desafiou você para um duelo"), então usamos
                         `title` como texto principal em vez de remontar a partir
@@ -132,6 +162,8 @@ export default function NotificationBell({ user }) {
                       </>
                     ) : null}
                     <span className="notif-item-time">{timeAgo(n.createdAt)}</span>
+                    </>
+                    )}
                   </span>
                 </button>
               ))

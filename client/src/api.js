@@ -216,6 +216,8 @@ const realApi = {
 
   // Anúncios do admin (demanda #9): pop-up no primeiro login após publicado.
   getPendingAnnouncements: () => request('/announcements/pending'),
+  // Histórico do usuário separado por tipo (demanda #12): { notifications, updates }.
+  getAnnouncementsHistory: () => request('/announcements/history'),
   markAnnouncementSeen: (id) => request(`/announcements/${id}/seen`, { method: 'POST', body: {} }),
   adminListAnnouncements: () => request('/admin/announcements'),
   adminCreateAnnouncement: (data) => request('/admin/announcements', { method: 'POST', body: data }),

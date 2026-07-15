@@ -19,6 +19,9 @@ export default function AdminAnnouncements() {
   const [body, setBody] = useState('');
   // Vazio = todos. O admin marca quem vê.
   const [roles, setRoles] = useState([]);
+  // Tipo (demanda #12): depois do pop-up, a notificação fica no sino e a atualização no
+  // botão de atualizações do sistema. O padrão é notificação.
+  const [type, setType] = useState('notification');
 
   const load = useCallback(() => {
     setLoading(true);
@@ -41,8 +44,8 @@ export default function AdminAnnouncements() {
     if (problems.title || problems.body) return setError(problems.title || problems.body);
     setSaving(true);
     try {
-      await api.adminCreateAnnouncement({ title: title.trim(), body: body.trim(), roles });
-      setTitle(''); setBody(''); setRoles([]);
+      await api.adminCreateAnnouncement({ title: title.trim(), body: body.trim(), roles, type });
+      setTitle(''); setBody(''); setRoles([]); setType('notification');
       setOk('Anúncio publicado. Vai aparecer no próximo login de cada usuário do público.');
       load();
     } catch (err) {
@@ -98,6 +101,23 @@ export default function AdminAnnouncements() {
           <textarea id="ann-body" value={body} onChange={(e) => { setBody(e.target.value); setOk(''); }} placeholder="O que você quer avisar…" style={{ minHeight: 120 }} maxLength={4000} />
         </div>
         <div>
+          <label>Tipo</label>
+          <div className="announcement-roles">
+            <label className={`role-chip ${type === 'notification' ? 'on' : ''}`}>
+              <input type="radio" name="ann-type" checked={type === 'notification'} onChange={() => { setType('notification'); setOk(''); }} />
+              Notificação (sino)
+            </label>
+            <label className={`role-chip ${type === 'update' ? 'on' : ''}`}>
+              <input type="radio" name="ann-type" checked={type === 'update'} onChange={() => { setType('update'); setOk(''); }} />
+              Atualização do sistema
+            </label>
+          </div>
+          <small className="field-hint">
+            Depois do pop-up, a <strong>notificação</strong> fica no sino e a{' '}
+            <strong>atualização</strong> no botão de atualizações do sistema.
+          </small>
+        </div>
+        <div>
           <label>Quem vê</label>
           <div className="announcement-roles">
             {ROLES.map((r) => (
@@ -117,17 +137,20 @@ export default function AdminAnnouncements() {
 
       <div className="card tight" style={{ padding: 0, overflow: 'auto' }}>
         <table className="admin-table">
-          <thead><tr><th>Título</th><th>Público</th><th>Publicado em</th><th>Status</th><th>Ações</th></tr></thead>
+          <thead><tr><th>Título</th><th>Tipo</th><th>Público</th><th>Publicado em</th><th>Status</th><th>Ações</th></tr></thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5} style={{ textAlign: 'center', padding: 24 }}>Carregando…</td></tr>
+              <tr><td colSpan={6} style={{ textAlign: 'center', padding: 24 }}>Carregando…</td></tr>
             ) : list.length === 0 ? (
-              <tr><td colSpan={5} style={{ textAlign: 'center', padding: 24, color: 'var(--text-soft)' }}>Nenhum anúncio ainda.</td></tr>
+              <tr><td colSpan={6} style={{ textAlign: 'center', padding: 24, color: 'var(--text-soft)' }}>Nenhum anúncio ainda.</td></tr>
             ) : list.map((a) => (
               <tr key={a.id}>
                 <td style={{ fontWeight: 600, color: 'var(--text)', maxWidth: 320 }}>
                   <div>{a.title}</div>
                   <div className="feature-matrix-desc"><span className="clamp-2">{a.body}</span></div>
+                </td>
+                <td style={{ color: 'var(--text-soft)' }}>
+                  {a.type === 'update' ? 'Atualização' : 'Notificação'}
                 </td>
                 <td style={{ color: 'var(--text-soft)' }}>
                   {audienceLabel(a.roles)}

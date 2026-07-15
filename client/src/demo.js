@@ -138,6 +138,7 @@ export const demoApi = {
   markAllNotificationsRead: () => delay({ ok: true }),
   // Anúncios (demanda #9): no modo demonstração não há servidor para publicá-los.
   getPendingAnnouncements: () => delay([]),
+  getAnnouncementsHistory: () => delay({ notifications: [], updates: [] }),
   markAnnouncementSeen: () => delay({ ok: true }),
   // Admin de competências e acesso do visitante: só com servidor. No modo demonstração
   // as telas de admin não são alcançáveis, mas a paridade api/demo exige os métodos.

@@ -28,8 +28,9 @@ describe('publicação (admin)', () => {
     const res = await pendentes(aluno);
     expect(res.status).toBe(200);
     expect(res.body.map((a) => a.title)).toEqual(['Bem-vindos']);
-    // O corpo público não vaza `roles`/`createdBy` — só o que o pop-up precisa.
-    expect(Object.keys(res.body[0]).sort()).toEqual(['body', 'createdAt', 'id', 'title']);
+    // O corpo público não vaza `roles`/`createdBy` — só o que o pop-up precisa (+ o tipo,
+    // demanda #12: o client decide onde o anúncio "mora" depois do pop-up).
+    expect(Object.keys(res.body[0]).sort()).toEqual(['body', 'createdAt', 'id', 'title', 'type']);
   });
 
   it('título ou texto vazio → 400 com o campo', async () => {
@@ -194,5 +195,79 @@ describe('admin: gerenciar', () => {
     const aluno = await loginAs('aluno');
     expect((await request(app).get('/api/admin/announcements').set(authHeader(aluno))).status).toBe(403);
     expect((await request(app).delete(`/api/admin/announcements/${criado.body.id}`).set(authHeader(aluno))).status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Demanda #12: o anúncio tem TIPO (notificação × atualização do sistema).
+// ---------------------------------------------------------------------
+describe('tipo do anúncio (demanda #12)', () => {
+  it('sem type → padrão "notification"; com type → respeitado', async () => {
+    const admin = await loginAs('admin');
+    expect((await publicar(admin, { title: 'a', body: 'b' })).body.type).toBe('notification');
+    expect((await publicar(admin, { title: 'c', body: 'd', type: 'update' })).body.type).toBe('update');
+  });
+
+  it('type inválido cai no padrão "notification"', async () => {
+    const admin = await loginAs('admin');
+    expect((await publicar(admin, { title: 'x', body: 'y', type: 'hacker' })).body.type).toBe('notification');
+  });
+
+  it('o histórico separa por tipo: notificação → sino, atualização → updates', async () => {
+    const admin = await loginAs('admin');
+    await publicar(admin, { title: 'Aviso', body: '.', type: 'notification', roles: ['therapist'] });
+    await publicar(admin, { title: 'Novidade', body: '.', type: 'update', roles: ['therapist'] });
+
+    const aluno = await loginAs('aluno');
+    const h = await request(app).get('/api/announcements/history').set(authHeader(aluno));
+    expect(h.status).toBe(200);
+    expect(h.body.notifications.map((a) => a.title)).toEqual(['Aviso']);
+    expect(h.body.updates.map((a) => a.title)).toEqual(['Novidade']);
+  });
+
+  it('o histórico respeita o PAPEL (o aluno não vê o que é só de visitante)', async () => {
+    const admin = await loginAs('admin');
+    await publicar(admin, { title: 'Só visitante', body: '.', type: 'update', roles: ['visitor'] });
+
+    const aluno = await loginAs('aluno');
+    const h = await request(app).get('/api/announcements/history').set(authHeader(aluno));
+    expect(h.body.updates).toEqual([]);
+  });
+
+  it('o histórico mostra o anúncio mesmo depois de confirmado no pop-up', async () => {
+    const admin = await loginAs('admin');
+    const criado = await publicar(admin, { title: 'Persiste', body: '.', type: 'notification', roles: ['therapist'] });
+
+    const aluno = await loginAs('aluno');
+    await confirmar(aluno, criado.body.id);   // fecha o pop-up
+
+    // Some do pop-up…
+    expect((await pendentes(aluno)).body).toEqual([]);
+    // …mas continua no histórico do sino.
+    const h = await request(app).get('/api/announcements/history').set(authHeader(aluno));
+    expect(h.body.notifications.map((a) => a.title)).toEqual(['Persiste']);
+  });
+
+  it('despublicar (active:false) tira o anúncio do histórico também', async () => {
+    const admin = await loginAs('admin');
+    const criado = await publicar(admin, { title: 'Temporário', body: '.', type: 'update', roles: ['therapist'] });
+
+    const aluno = await loginAs('aluno');
+    expect((await request(app).get('/api/announcements/history').set(authHeader(aluno))).body.updates.length).toBe(1);
+
+    await request(app).put(`/api/admin/announcements/${criado.body.id}`).set(authHeader(admin)).send({ active: false });
+    expect((await request(app).get('/api/announcements/history').set(authHeader(aluno))).body.updates).toEqual([]);
+  });
+
+  it('o admin pode MUDAR o tipo depois (notificação ↔ atualização)', async () => {
+    const admin = await loginAs('admin');
+    const criado = await publicar(admin, { title: 'Muda', body: '.', type: 'notification', roles: ['therapist'] });
+
+    await request(app).put(`/api/admin/announcements/${criado.body.id}`).set(authHeader(admin)).send({ type: 'update' });
+
+    const aluno = await loginAs('aluno');
+    const h = await request(app).get('/api/announcements/history').set(authHeader(aluno));
+    expect(h.body.notifications).toEqual([]);
+    expect(h.body.updates.map((a) => a.title)).toEqual(['Muda']);
   });
 });

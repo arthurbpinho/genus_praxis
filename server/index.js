@@ -1346,6 +1346,10 @@ app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
 // O visitante é um usuário real (demanda #1), então isso vale para ele igual.
 
 const ANNOUNCEMENT_ROLES = ['therapist', 'visitor', 'supervisor', 'admin'];
+// Tipo do anúncio (demanda #12): depois do pop-up, uma NOTIFICAÇÃO fica no sino e uma
+// ATUALIZAÇÃO fica no botão de "atualizações do sistema". O padrão é notificação.
+const ANNOUNCEMENT_TYPES = ['notification', 'update'];
+const announcementType = (t) => (ANNOUNCEMENT_TYPES.includes(t) ? t : 'notification');
 
 function readAnnouncements() {
   const list = readJSON('announcements.json', []);
@@ -1369,9 +1373,32 @@ function pendingAnnouncementsFor(user) {
     .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
 }
 
+/** Anúncios ATIVOS que atingem o papel do usuário — o histórico dele (visto ou não). */
+function announcementsFor(user) {
+  if (!user) return [];
+  return readAnnouncements()
+    .filter((a) => a.active !== false)
+    .filter((a) => announcementTargetsRole(a, user.role))
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));   // recente primeiro
+}
+
+const publicAnnouncement = (a) => ({
+  id: a.id, title: a.title, body: a.body, type: announcementType(a.type), createdAt: a.createdAt,
+});
+
 // O usuário vê os pop-ups pendentes (o client abre um de cada vez).
 app.get('/api/announcements/pending', requireAuth, (req, res) => {
-  res.json(pendingAnnouncementsFor(req.user).map(({ id, title, body, createdAt }) => ({ id, title, body, createdAt })));
+  res.json(pendingAnnouncementsFor(req.user).map(publicAnnouncement));
+});
+
+// Histórico do usuário, separado por tipo: o sino lê `notifications`, o botão de
+// atualizações lê `updates`. Depois do pop-up, o anúncio "mora" no lugar do seu tipo.
+app.get('/api/announcements/history', requireAuth, (req, res) => {
+  const mine = announcementsFor(req.user).map(publicAnnouncement);
+  res.json({
+    notifications: mine.filter((a) => a.type === 'notification'),
+    updates: mine.filter((a) => a.type === 'update'),
+  });
 });
 
 // Confirmar que viu (fecha o pop-up). Marca no próprio usuário — não apaga o anúncio.
@@ -1407,6 +1434,7 @@ app.post('/api/admin/announcements', requireAuth, requireRole('admin'), async (r
   const ann = {
     id: 'ann' + Date.now() + '-' + crypto.randomBytes(3).toString('hex'),
     title, body, roles,
+    type: announcementType(req.body && req.body.type),   // notification | update (demanda #12)
     active: true,
     createdAt: new Date().toISOString(),
     createdBy: req.user.username,
@@ -1429,6 +1457,7 @@ app.put('/api/admin/announcements/:id', requireAuth, requireRole('admin'), async
     if ('title' in (req.body || {})) all[idx].title = clampStr(req.body.title, 200).trim() || all[idx].title;
     if ('body' in (req.body || {})) all[idx].body = clampStr(req.body.body, 4000).trim() || all[idx].body;
     if (Array.isArray(req.body.roles)) all[idx].roles = req.body.roles.filter((r) => ANNOUNCEMENT_ROLES.includes(r));
+    if ('type' in (req.body || {})) all[idx].type = announcementType(req.body.type);
     writeJSON('announcements.json', all);
     return { ann: all[idx] };
   });

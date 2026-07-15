@@ -191,7 +191,7 @@ function AppShell({ onUserChange }) {
   return (
     <div className={`app-layout ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <div className="topbar-actions">
-        <SystemUpdates />
+        <SystemUpdates userId={user.id} />
         <NotificationBell user={user} />
       </div>
 

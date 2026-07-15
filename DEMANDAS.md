@@ -1045,12 +1045,12 @@ assim, os logs dos alunos **serão apagados** aos 30 dias — inclusive as avali
 
 # 📥 BACKLOG NOVO — 2026-07-15 (deploy no ar)
 
-## 11. 🔴 BUG: a tela "Acessos" fica preta (crash de runtime)
+## 11. ✅ BUG: a tela "Acessos" fica preta (crash de runtime) — CORRIGIDO
 
 > A tela de Admin → Acessos carrega e, quando termina, fica uma tela preta gigante.
 > Não dá para ver nada.
 
-**Status:** ☐ A fazer · **URGENTE** (a tela fica inutilizável) · **Pontos: 2**
+**Status:** ✅ FEITO (commit do fix do import de Link). Falta só o DEPLOY MANUAL para o ar pegar. Pontos: 2
 
 ### Causa raiz — JÁ IDENTIFICADA no console do navegador
 ```
@@ -1079,14 +1079,28 @@ indefinido só estoura em runtime), e a suíte não renderiza React — por isso
 
 ---
 
-## 12. Anúncios: dois tipos (notificação × atualização) + controle do admin
+## 12. ✅ Anúncios: dois tipos (notificação × atualização) + controle do admin — FEITO
 
 > O anúncio pode ser uma NOTIFICAÇÃO ou uma ATUALIZAÇÃO DO SISTEMA. Comportamento padrão dos
 > dois: pop-up no primeiro login; depois vai para o seu histórico respectivo — notificação no
 > **sininho**, atualização no botão de **atualizações do sistema**. E o admin precisa poder
 > RETIRAR um anúncio da tela dos usuários.
 
-**Status:** ☐ A fazer · **Pontos: 5** · Estende a demanda #9 (já feita).
+**Status:** ✅ FEITO (2026-07-15) · **Pontos: 5** · Estende a demanda #9.
+
+### ✅ Implementado
+- Campo `type` no anúncio (`notification` | `update`, padrão notification). POST e PUT o aceitam.
+- `GET /api/announcements/history` → `{ notifications, updates }`, por papel, só os ativos.
+- **Sino** (`NotificationBell`) passa a misturar os anúncios do tipo notification (como
+  histórico "lido", sem inflar o badge de não-lidos).
+- **Botão de atualizações** (`SystemUpdates`) passa a ler os anúncios do tipo update do
+  SERVIDOR — o `changelog.js` hardcoded foi **esvaziado** (mostrava notas de dev antigas).
+- Tela de admin: seletor de tipo (rádio) + coluna Tipo na lista.
+- Retirar: o "despublicar" (active:false) da #9 já tira o anúncio do pop-up E do histórico
+  (sino/updates). Verificado ao vivo.
+- Limpeza: um deploy limpo começa SEM atualizações (o changelog foi zerado; os anúncios do
+  servidor nascem vazios).
+- 7 testes novos + 2 mutantes. 842 testes no total.
 
 ### O que muda em relação à #9 (que já entregou o pop-up + tela de admin)
 1. **Tipo do anúncio.** Ao criar, o admin escolhe: `notificação` ou `atualização do sistema`.
