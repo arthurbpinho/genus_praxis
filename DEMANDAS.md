@@ -1040,3 +1040,81 @@ assim, os logs dos alunos **serão apagados** aos 30 dias — inclusive as avali
 - O **volume** está configurado (`DATA_DIR=/data` + mount no Railway), e sem ele o deploy
   falha no healthcheck (`/api/health` responde 503 se o diretório não for gravável).
 - O **duelo** tem TTL próprio (`DUEL_TTL_MS`, 30 dias) — mesma discussão, escopo menor.
+
+---
+
+# 📥 BACKLOG NOVO — 2026-07-15 (deploy no ar)
+
+## 11. 🔴 BUG: a tela "Acessos" fica preta (crash de runtime)
+
+> A tela de Admin → Acessos carrega e, quando termina, fica uma tela preta gigante.
+> Não dá para ver nada.
+
+**Status:** ☐ A fazer · **URGENTE** (a tela fica inutilizável) · **Pontos: 2**
+
+### Causa raiz — JÁ IDENTIFICADA no console do navegador
+```
+Uncaught ReferenceError: Link is not defined   (index-*.js)
+```
+`client/src/pages/AdminFeatures.jsx` usa `<Link to="/admin/contas">` (no aviso da chave
+mestra que adicionei junto com a clarificação da avaliação por papel) **mas nunca importa
+o `Link` do `react-router-dom`**. Como o React não tem tratamento de erro, um `ReferenceError`
+na renderização derruba a árvore inteira → tela preta.
+
+Fui eu que introduzi ao editar essa tela. O `vite build` NÃO pega isso (um símbolo global
+indefinido só estoura em runtime), e a suíte não renderiza React — por isso passou.
+
+### A fazer
+1. **Corrigir:** `import { Link } from 'react-router-dom';` em `AdminFeatures.jsx`.
+2. **Varrer o resto:** procurar em TODAS as páginas/componentes qualquer `<Link>`,
+   `<Navigate>`, `useNavigate`, `useParams` usado sem o import correspondente — se aconteceu
+   numa, pode ter em outra que editei.
+3. **ErrorBoundary (a lição de fundo):** hoje, um erro em qualquer tela deixa a tela preta,
+   sem mensagem. Adicionar um `<ErrorBoundary>` em volta das rotas para que o próximo crash
+   mostre "algo deu errado nesta tela" em vez de derrubar o app todo. Isto é o que transforma
+   um bug de uma tela num incidente de UMA tela, não do sistema inteiro.
+4. **Trava de teste:** a suíte node não renderiza React, mas dá para travar no fonte — um
+   teste que falha se um arquivo usar `<Link` sem importar `Link` (grep no fonte, no espírito
+   do `prompt-files.test.js`). Barato, e pega exatamente esta classe de bug.
+
+---
+
+## 12. Anúncios: dois tipos (notificação × atualização) + controle do admin
+
+> O anúncio pode ser uma NOTIFICAÇÃO ou uma ATUALIZAÇÃO DO SISTEMA. Comportamento padrão dos
+> dois: pop-up no primeiro login; depois vai para o seu histórico respectivo — notificação no
+> **sininho**, atualização no botão de **atualizações do sistema**. E o admin precisa poder
+> RETIRAR um anúncio da tela dos usuários.
+
+**Status:** ☐ A fazer · **Pontos: 5** · Estende a demanda #9 (já feita).
+
+### O que muda em relação à #9 (que já entregou o pop-up + tela de admin)
+1. **Tipo do anúncio.** Ao criar, o admin escolhe: `notificação` ou `atualização do sistema`.
+   - Hoje o pop-up existe (#9), mas o "depois do pop-up" só contempla notificação.
+   - **Notificação** → depois de lida, entra na lista do **sino** (`NotificationBell`, já existe).
+   - **Atualização do sistema** → depois de lida, entra na lista do botão de **atualizações**
+     (`<SystemUpdates>` + `changelog.js`, já existem — hoje o conteúdo é hardcoded no
+     `changelog.js`).
+2. **O admin retira o anúncio.** Já existe "despublicar" (`active:false`) na #9 — confirmar
+   que ele TIRA da tela do usuário (do sino / das atualizações), não só do pop-up. Talvez
+   precise de um "arquivar" além do "apagar".
+3. **Ligar os anúncios ao `SystemUpdates`.** Hoje o `<SystemUpdates>` lê um `changelog.js`
+   ESTÁTICO (hardcoded no client). Os anúncios do tipo "atualização" precisam alimentar esse
+   botão — ou o `SystemUpdates` passa a ler do servidor (`announcements` do tipo update), ou
+   o changelog.js some e tudo vira anúncio.
+
+### 🧹 Limpeza no deploy (parte da demanda)
+> Tem várias atualizações do sistema ANTIGAS que não existem mais. Apagar como padrão; ao
+> subir o sistema, começa em branco.
+
+O `<SystemUpdates>` mostra um `changelog.js` versionado, com entradas de desenvolvimento
+("8 de julho — Duelo, Ranking e Progressão…") que não deveriam aparecer para os usuários
+reais. **Limpar o `changelog.js`** (ou migrar tudo para os anúncios do servidor, que já
+nascem vazios num deploy limpo — ver #9). Um deploy limpo deve começar SEM atualizações.
+
+### ⚠ Decisões a confirmar antes de codar
+- O `<SystemUpdates>` deve passar a ler do servidor (anúncios tipo "update"), ou continua um
+  arquivo estático que a gente só esvazia? (Ler do servidor é o certo se o admin vai criar
+  atualizações pela tela; estático é mais simples se as atualizações forem raras e via deploy.)
+- "Retirar da tela" = despublicar (some para todos, mas o anúncio fica no admin) ou apagar
+  de vez? Provavelmente os dois, como na #9.

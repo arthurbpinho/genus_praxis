@@ -4,6 +4,7 @@
 // fonte única. Esta tela não conhece nenhuma feature por nome — adicionar uma em
 // `server/features.js` a faz aparecer aqui sozinha.
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { useFeatures } from '../features';
 import Typewriter from '../components/Typewriter';
