@@ -82,11 +82,11 @@ export const demoApi = {
     return delay(merged);
   },
 
-  getCharacters: () => delay(characters.map((c) => ({ ...c }))),
-  createCharacter: (data) => { const c = { id: 'ch' + Date.now(), ...data }; characters.push(c); return delay(c); },
-  updateCharacter: (id, data) => { const i = characters.findIndex((c) => c.id === id); if (i >= 0) characters[i] = { ...characters[i], ...data }; return delay(characters[i]); },
-  deleteCharacter: (id) => { characters = characters.filter((c) => c.id !== id); return delay({ ok: true }); },
-  setCharacterPhoto: (id, data) => {
+  getFreeplay: () => delay(characters.map((c) => ({ ...c, difficulty: null, competitiveMatches: 0 }))),
+  createFreeplay: (data) => { const c = { id: 'ch' + Date.now(), ...data }; characters.push(c); return delay(c); },
+  updateFreeplay: (id, data) => { const i = characters.findIndex((c) => c.id === id); if (i >= 0) characters[i] = { ...characters[i], ...data }; return delay(characters[i]); },
+  deleteFreeplay: (id) => { characters = characters.filter((c) => c.id !== id); return delay({ ok: true }); },
+  setFreeplayPhoto: (id, data) => {
     const i = characters.findIndex((c) => c.id === id);
     if (i >= 0) {
       if (data && data.clear) { delete characters[i].photoIcon; delete characters[i].photoFull; }
@@ -94,6 +94,65 @@ export const demoApi = {
     }
     return delay(characters[i]);
   },
+
+  // Trilha de competências: sem exercícios no modo demonstração.
+  getExercises: () => delay([]),
+  createExercise: (d) => delay({ id: 'ex' + Date.now(), ...d }),
+  updateExercise: (id, d) => delay({ id, ...d }),
+  deleteExercise: () => delay({ ok: true }),
+  getProgress: () => delay({}),
+  saveProgress: (userId, d) => delay(d),
+
+  // Recursos que dependem de servidor real (IA, MMR, duelos, notificações).
+  // No modo demonstração aparecem vazios em vez de quebrar a página.
+  // O cadastro de visitante exige servidor. O <Login> esconde o formulário no modo
+  // demonstração, então isto só seria alcançado por engano.
+  loginVisitor: (_payload) => Promise.reject(new Error('Cadastro de visitante indisponível no modo demonstração')),
+  logout: () => { try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); } catch {} },
+  setMyTitle: () => delay({ ok: true }),
+  getProfilePhotos: () => delay([]),
+  getGamification: () => delay({ streak: null, dailyMissions: [], achievements: [], stats: {} }),
+  getRanking: () => delay([]),
+  getMyMmr: () => delay(null),
+  adminResetRanking: () => delay({ ok: true }),
+  getMyStudents: () => delay(users.filter((u) => u.role === 'therapist')),
+  getEntrevistadorPrompt: () => delay({ prompt: '' }),
+  entrevistadorChat: () => Promise.reject(new Error('Entrevistador indisponível no modo demonstração')),
+  extractBlocos: () => delay({ ready: false, bloco1: '', bloco2: null, meta: { name: '', age: null, description: '' } }),
+  createCharacterFromInterview: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  getDuelOpponents: () => delay([]),
+  createDuel: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  getDuel: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  getDuelByToken: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  acceptDuelByToken: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  acceptDuel: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  submitDuel: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  cancelDuel: () => delay({ ok: true }),
+  exportDuelLog: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  getSocialLogs: () => delay([]),
+  getProgressionPatients: () => delay([]),
+  evaluateProgression: () => Promise.reject(new Error('Progressão indisponível no modo demonstração')),
+  // Mesmo shape da API real: { items, unread }.
+  getNotifications: () => delay({ items: [], unread: 0 }),
+  markNotificationRead: () => delay({ ok: true }),
+  markAllNotificationsRead: () => delay({ ok: true }),
+  // Anúncios (demanda #9): no modo demonstração não há servidor para publicá-los.
+  getPendingAnnouncements: () => delay([]),
+  getAnnouncementsHistory: () => delay({ notifications: [], updates: [] }),
+  markAnnouncementSeen: () => delay({ ok: true }),
+  // Admin de competências e acesso do visitante: só com servidor. No modo demonstração
+  // as telas de admin não são alcançáveis, mas a paridade api/demo exige os métodos.
+  adminCreateSkill: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminUpdateSkill: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminReorderSkills: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminDeleteSkill: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminSkillOrphans: () => delay([]),
+  adminVisitorAccess: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminListAnnouncements: () => delay([]),
+  adminCreateAnnouncement: () => Promise.reject(new Error('Anúncios indisponíveis no modo demonstração')),
+  adminUpdateAnnouncement: () => Promise.reject(new Error('Anúncios indisponíveis no modo demonstração')),
+  adminDeleteAnnouncement: () => delay({ ok: true }),
+  listActiveSessions: () => delay([]),
 
   getLogs: (userId) => {
     const u = currentUser();
@@ -129,7 +188,25 @@ export const demoApi = {
   saveActiveSession: (t, i, d) => delay(d),
   clearActiveSession: () => delay({ ok: true }),
 
-  getSettings: () => delay({ evaluatorEnabled: false }),
+  // Modo demonstração: tudo liberado, sem avaliação por IA (não há servidor/chave).
+  // O shape acompanha o do servidor (demandas #3 e #4), senão a sidebar quebra.
+  getSkills: () => delay([
+    { id: 1, name: 'Hermenêutica', color: '#ff6200' },
+    { id: 2, name: 'Estrutura', color: '#7a34b8' },
+    { id: 3, name: 'Empatia', color: '#e05200' },
+    { id: 4, name: 'Especificidade do caso', color: '#b06adf' },
+    { id: 5, name: 'Eu', color: '#c14503' },
+  ]),
+  getSettings: () => delay({
+    evaluatorEnabled: false,
+    lockedFeatureMessage: '',
+    featureAccess: {},
+    features: [],
+    featureRoles: ['aluno', 'visitante'],
+    myFeatures: {},
+    visitorDurations: [],
+    visitorAccessDuration: '3d',
+  }),
   adminUpdateSettings: (d) => delay({ evaluatorEnabled: !!(d && d.evaluatorEnabled) }),
 
   adminListUsers: () => delay(users.map((u) => ({ ...u }))),

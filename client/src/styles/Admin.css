@@ -1,0 +1,295 @@
+/* =====================================================================
+   Admin.css — classes compartilhadas por AdminExercises, AdminFreeplay
+   e AdminEntrevistador. Convertidas do All_OS ao tema laranja do Genus.
+   Classes genéricas (.danger/.primary/.active) escopadas sob .admin-page.
+   ===================================================================== */
+
+/* Pílula de competência / tag na tabela de exercícios */
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--orange);
+  background: rgba(255, 98, 0, 0.1);
+  border: 1px solid var(--border-orange);
+  white-space: nowrap;
+}
+
+/* Pílula de dificuldade */
+.difficulty-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.difficulty-pill.difficulty-iniciante {
+  color: #74e2a8;
+  background: rgba(46, 199, 122, 0.12);
+  border-color: rgba(46, 199, 122, 0.32);
+}
+.difficulty-pill.difficulty-intermediario {
+  color: var(--warn);
+  background: rgba(255, 176, 32, 0.12);
+  border-color: rgba(255, 176, 32, 0.34);
+}
+.difficulty-pill.difficulty-avancado {
+  color: #ff8f98;
+  background: rgba(255, 92, 106, 0.12);
+  border-color: rgba(255, 92, 106, 0.34);
+}
+
+/* Marca "customizado / padrão" na coluna do avaliador */
+.eval-flag { color: var(--text); font-size: 13px; }
+.eval-flag.default { color: var(--text-muted); font-style: italic; }
+
+/* =====================================================================
+   AdminEntrevistador — visualização (leitura) do prompt
+   ===================================================================== */
+.prompt-view {
+  margin-top: 4px;
+}
+.prompt-view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.prompt-view-toolbar .meta {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.prompt-pre {
+  margin: 0;
+  max-height: 62vh;
+  overflow: auto;
+  padding: 20px 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: rgba(0, 0, 0, 0.32);
+  color: var(--text-soft);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* =====================================================================
+   Escopo de classes genéricas sob .admin-page (evita colisão global)
+   ===================================================================== */
+.admin-page .copied {
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* =====================================================================
+   Entrevistador — chat de construção de personagem
+   ===================================================================== */
+
+/* Barra de ações do cabeçalho: quebra linha no mobile em vez de estourar. */
+.admin-page .entrevistador-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* O .chat-container global ocupa a viewport inteira; aqui ele divide o espaço
+   com o cabeçalho da página, então encolhemos e damos moldura de card. */
+.admin-page .entrevistador-chat {
+  height: auto;
+  min-height: 420px;
+  max-height: calc(100vh - 280px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 0 14px;
+}
+@supports (height: 100dvh) {
+  .admin-page .entrevistador-chat { max-height: calc(100dvh - 280px); }
+}
+
+/* Textareas que exibem prompt bruto: monoespaçado, com scroll próprio.
+   `pre-wrap` (e não `pre`) porque as linhas do prompt são longas e empurrariam
+   a página inteira para fora da tela no celular. */
+.admin-page .mono-area {
+  min-height: 260px;
+  max-width: 100%;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+}
+.admin-page .mono-area.short { min-height: 150px; }
+
+/* =====================================================================
+   Matriz de acesso a funcionalidades (demanda #4) + mensagem do cadeado (#3).
+   Tudo escopado sob `.admin-page`, como manda a convenção do projeto.
+   ===================================================================== */
+
+/* Aviso de que a matriz mexe no sistema, não na aparência. */
+.admin-page .feature-warning { border-left: 3px solid var(--accent); }
+.admin-page .feature-warning p,
+.admin-page .feature-warning li {
+  color: var(--text-soft);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+.admin-page .feature-warning ul { margin: 6px 0 12px; padding-left: 20px; }
+.admin-page .feature-warning li { margin-bottom: 6px; }
+.admin-page .feature-warning-note {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-2);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* A tabela rola dentro do próprio container: no celular ela não pode empurrar a
+   página inteira para fora da tela (mesma regra das outras 4 tabelas do projeto). */
+.admin-page .table-wrap { overflow-x: auto; }
+
+.admin-page .feature-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 380px;
+}
+.admin-page .feature-matrix th,
+.admin-page .feature-matrix td {
+  padding: 13px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-2);
+  vertical-align: top;
+}
+.admin-page .feature-matrix thead th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.admin-page .feature-matrix tbody tr:last-child td { border-bottom: none; }
+.admin-page .feature-matrix-role,
+.admin-page .feature-matrix-cell { text-align: center; width: 108px; }
+
+.admin-page .feature-matrix-name { font-weight: 600; font-size: 14px; }
+.admin-page .feature-matrix-desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Alvo de toque de 44px (WCAG/Apple HIG) — o checkbox sozinho tem ~16px. */
+.admin-page .feature-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  cursor: pointer;
+}
+.admin-page .feature-check input {
+  width: 18px;
+  height: 18px;
+  padding: 0;   /* anula o padding da regra global de input (index.css) */
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Rótulo só para leitor de tela: o checkbox da célula precisa de nome acessível,
+   mas o texto já está visível na coluna da esquerda. */
+.admin-page .sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Coluna de contato na tabela de contas (demanda #6): e-mail em cima, telefone embaixo. */
+.admin-contact { font-size: 13px; color: var(--text-soft); line-height: 1.5; }
+.admin-contact-phone { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* Colunas de acesso do paciente (demanda #7): quem pode atender. */
+.admin-page .access-col,
+.access-col { text-align: center; width: 92px; }
+.access-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;   /* alvo de toque (WCAG/Apple HIG) */
+  height: 44px;
+  cursor: pointer;
+}
+.access-check input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); cursor: pointer; }
+.access-check input:disabled { opacity: 0.5; cursor: wait; }
+
+/* Prazo do acesso do visitante (demanda #8). */
+.access-pill {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.access-active    { background: rgba(56, 199, 122, 0.14); color: #38c77a; }
+.access-unlimited { background: rgba(140, 150, 165, 0.14); color: var(--text-muted); }
+.access-expired   { background: rgba(255, 92, 106, 0.14); color: var(--danger); }
+.access-blocked   { background: rgba(255, 92, 106, 0.2);  color: var(--danger); }
+
+/* Competências da trilha (demandas #5a/#5b). */
+.skill-swatch {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border-2);
+}
+.orphan-list { margin: 8px 0 0; padding-left: 20px; color: var(--text-soft); font-size: 13.5px; line-height: 1.7; }
+.orphan-list .muted { color: var(--text-muted); }
+
+/* Chips de público do anúncio (demanda #9). */
+.announcement-roles { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.role-chip.on { border-color: var(--accent); color: var(--accent); background: rgba(255, 122, 26, 0.1); }
+.role-chip:hover { border-color: var(--accent); }
+/* ⚠ A regra GLOBAL `input { width:100%; padding; border }` (index.css) se aplicava a este
+   checkbox e o transformava numa caixa de largura total com borda — quebrando o chip. Aqui
+   ele volta ao tamanho natural de um checkbox. */
+.role-chip input {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border-radius: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
